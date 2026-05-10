@@ -9,15 +9,14 @@ that affect the protocol surface are listed in §4.
 | Protocol | Control transport | Media transport | Default port | Supported by this monitor | Note |
 |---|---|---|---|---|---|
 | RTSP | TCP | n/a (Basic only) | 554 | **Yes — Basic** | OPTIONS/DESCRIBE handshake |
-| RTSP | TCP | RTP over TCP-interleaved | 554 | **Yes — Enhanced, Full** | RFC 2326 §10.12; works through firewalls |
-| RTSP | TCP | RTP over UDP | 554 (control), dynamic UDP (media) | **Yes — Enhanced, Full** | The "RTSP over UDP" case in the original brief, properly named |
+| RTSP | TCP | RTP over TCP-interleaved | 554 | **Yes — Enhanced, Full** | RFC 2326 §10.12; works through firewalls. UI label: "RTSP/TCP" |
+| RTSP | TCP | RTP over UDP | 554 (control), dynamic UDP (media) | **Yes — Enhanced, Full** | UI label: "RTSP/UDP" with a `?` tooltip clarifying that this means RTSP control over TCP and RTP media over UDP — see UI-008 in [04-requirements.md](./04-requirements.md) |
 | RTSP | UDP | n/a | 554 | **No** | IANA-reserved but virtually unused; see §3.1 |
 | RTSPS | TLS over TCP | RTP over TCP-interleaved | 322 | **Yes — Basic, Enhanced, Full** | RFC 7826 §4.2 |
-| RTSPS | TLS over TCP | RTP over UDP | 322 (control), dynamic UDP (media) | **Yes — Basic, Enhanced, Full** | Control encrypted; media is plain RTP unless SRTP-keyed (see §3.2) |
-| RTSP | DTLS over UDP | n/a | n/a | **No** | Not a real protocol; see §3.3 and [08-open-questions.md](./08-open-questions.md) |
+| RTSPS | TLS over TCP | RTP over UDP | 322 (control), dynamic UDP (media) | **Yes — Basic, Enhanced, Full** | Control encrypted; media is plain RTP unless SRTP-keyed (rare) |
 | RTMP | TCP | (in-band) | 1935 | **Yes — Basic, Enhanced, Full** | C0/C1 handshake at minimum |
 | RTMPS | TLS over TCP | (in-band) | 443 or 4935 | **Yes — Basic, Enhanced, Full** | TLS-then-RTMP |
-| RTMP | UDP | n/a | n/a | **No** | Does not exist; see §3.4 |
+| RTMP | UDP | n/a | n/a | **No** | Does not exist; see §3.3 |
 | RTMFP | UDP | UDP | dynamic | **No** | Different protocol family; out of scope |
 
 `[HIGH]` confidence on every row above. Sources: RFC 2326, RFC 7826, RFC 7016,
@@ -47,34 +46,16 @@ Dahua, Axis, Reolink, Amcrest, Unifi, MediaMTX, GStreamer, FFmpeg) uses TCP
 for control. **Not implementing.** If a vendor request emerges, it is
 mechanically additive (a UDP socket parallel to the TCP path).
 
-### 3.2 SRTP / DTLS-SRTP under RTSP
+### 3.2 SRTP under RTSPS
 
-SRTP can carry RTP media securely. The standard keying mechanism that pairs
-DTLS with SRTP (RFC 5764, "DTLS-SRTP") is *the* WebRTC media stack — it is
-not used as the keying mechanism for RTSP-controlled sessions in any
-deployed product surveyed. RTSPS encrypts the *control* channel; if the
-underlying RTP needs encryption, that's a separate (and rarely used)
-configuration.
-
-For Enhanced and Full modes, we delegate media decoding to FFmpeg / `node-av`
+SRTP can carry RTP media securely. RTSPS encrypts the *control* channel;
+if the underlying RTP needs encryption, the keying is a separate
+(and rarely used) configuration. We delegate media decoding to `node-av`
 (see **[03-monitoring-modes.md](./03-monitoring-modes.md)** §6); whichever
-SRTP keying the camera uses is FFmpeg's problem, not ours, *if* we
-configured the URL correctly.
+SRTP keying the camera uses is libav's concern, not ours, *if* the URL
+is configured correctly.
 
-### 3.3 RTSP over DTLS
-
-**The original brief asked us to plan for this.** Research found no RFC,
-no vendor documentation, no FFmpeg flag, no GStreamer element, and no
-maintained client library that implements RTSP-control-over-DTLS. The
-plausible source of the request is conflation with DTLS-SRTP under WebRTC,
-which is a different stack with a different control protocol.
-
-**PUSHBACK: RTSP-over-DTLS is excluded from scope.** See
-**[08-open-questions.md](./08-open-questions.md)** §1 for the full argument
-and the alternative — *RTSPS over TCP with optional SRTP for the media
-channel* — that I propose covers the apparent intent.
-
-### 3.4 RTMP over UDP
+### 3.3 RTMP over UDP
 
 RTMP is TCP-only by specification. The protocol's framing (C0+C1 handshake,
 chunk streams, AMF) assumes ordered, reliable byte delivery — UDP gives
@@ -84,9 +65,9 @@ NAT-traversal in legacy Adobe Flash applications. RTMFP has no current
 camera-vendor adoption.
 
 **PUSHBACK: "RTMP over UDP" is excluded from scope.** See
-**[08-open-questions.md](./08-open-questions.md)** §2.
+**[08-open-questions.md](./08-open-questions.md)**.
 
-### 3.5 Other media protocols
+### 3.4 Other media protocols
 
 Out of scope explicitly: HLS (`.m3u8`), DASH (`.mpd`), MPEG-TS over HTTP,
 WebRTC (whip/whep), MJPEG over HTTP, ONVIF event subscriptions, SRT, and

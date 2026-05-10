@@ -183,89 +183,16 @@ In fairness:
 - It uses `--retry-connrefused` on the curl post-back, which is
   defensive and correct.
 
-## 4. Mapping to the new design
+## 4. How findings inform the new design
 
-| Script element | Replacement in new design |
+The script informed the new design's *intent* — the FFmpeg flags
+themselves were starting points, not literal references. The takeaways
+that influenced the requirements:
+
+| Script finding | Influenced requirement |
 |---|---|
-| Hardcoded URL array | `monitor.url`, persisted per-monitor |
-| Push-monitor URLs | Replaced by active checks; the heartbeat is internal |
-| `ffmpeg6` invocation | OP-001/OP-002 decode-stack auto-detection; configurable timeout via the wall-clock backstop in OP-003 |
-| `tmp_rtsp_vframes/` | Removed entirely; in-memory `Buffer` |
-| `5.jpg > 85000` heuristic | FR-013 structural validation + FR-014 black/uniform + frozen-frame detection |
-| `set -x` log noise | Heartbeat `msg` patterns from NFR-040 |
-| Cron-driven cadence | Uptime Kuma's `interval` per monitor |
-| Concurrent-cron race | NFR-014 (per-monitor mutex) + NFR-004 (global concurrency cap) |
-
-## 5. A "what the script could have been" sketch
-
-For posterity, here is the script the user could deploy *today* (until the
-new monitor is implemented) that fixes the issues above without changing
-the architecture. Useful as a stop-gap.
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-readonly RTSP_URLS=("rtsp://192.168.2.94:8554/front-doorbell-cam"
-                    "rtsp://192.168.2.94:8554/backyard-far-corner")
-readonly UPKUMA_URLS=("http://192.168.2.94/api/push/RktTd5dMfv"
-                      "http://192.168.2.94/api/push/fua4NfLfUY")
-readonly CURL_OPTS=(--max-time 10 --connect-timeout 10
-                    --retry 3 --retry-delay 15 --retry-max-time 30
-                    --retry-connrefused
-                    -H "Host: utkuma.nickbetcher.com")
-readonly TIMEOUT_SEC=15
-
-probe_one() {
-    local url="$1" push="$2"
-    local tmpdir hashes
-    tmpdir="$(mktemp -d -t rtsp-probe.XXXXXX)"
-    trap 'rm -rf "$tmpdir"' RETURN
-
-    if ! timeout --kill-after=5 "$TIMEOUT_SEC" \
-         ffmpeg -hide_banner -loglevel error \
-                -rtsp_transport tcp \
-                -timeout 5000000 \
-                -fflags +discardcorrupt+nobuffer \
-                -i "$url" \
-                -frames:v 5 -f image2 "$tmpdir/%d.jpg"; then
-        curl "${CURL_OPTS[@]}" "$push?status=down&msg=ffmpeg%20failed"
-        return
-    fi
-
-    # All 5 frames present and structurally valid?
-    for n in 1 2 3 4 5; do
-        [[ -s "$tmpdir/$n.jpg" ]]                                 || { curl "${CURL_OPTS[@]}" "$push?status=down&msg=missing%20frame"; return; }
-        head -c 3 "$tmpdir/$n.jpg" | xxd -p | grep -q '^ffd8ff'   || { curl "${CURL_OPTS[@]}" "$push?status=down&msg=bad%20jpeg"; return; }
-    done
-
-    # Frozen-frame check: at least one pair must differ.
-    hashes="$(for n in 1 2 3 4 5; do md5sum < "$tmpdir/$n.jpg" | cut -d' ' -f1; done | sort -u | wc -l)"
-    if [[ "$hashes" -lt 2 ]]; then
-        curl "${CURL_OPTS[@]}" "$push?status=down&msg=frozen%20frame"
-        return
-    fi
-
-    curl "${CURL_OPTS[@]}" "$push?status=up&msg=RTSP%20ok"
-}
-
-for i in "${!RTSP_URLS[@]}"; do
-    probe_one "${RTSP_URLS[$i]}" "${UPKUMA_URLS[$i]}"
-done
-```
-
-Differences from the original:
-
-- `set -euo pipefail` (proper fail-fast).
-- `mktemp -d` per invocation (no race).
-- `timeout` wrapper as a hard backstop.
-- JPEG magic-byte validation per frame, not just file size.
-- Frozen-frame detection via md5 over all five frames.
-- `-fflags +discardcorrupt+nobuffer` (named, not magic numbers).
-- Both correct location (before `-i`) and correct microsecond value
-  for `-timeout 5000000`.
-
-This is *what the script becomes when the same intent is expressed
-correctly*. The point is to make the failure modes the original has
-visible — not to recommend the user actually deploy it. The native
-monitor in this design is the proper replacement.
+| F-09: 85,000-byte threshold is fragile | FR-013 (structural validation: JPEG magic, dimension sanity) |
+| F-10: Frozen-frame failure invisible | FR-013 (frozen-frame detection via per-frame hash) |
+| F-08: Concurrent-invocation race on temp dir | OP-004 (no temp directory) + NFR-014 (per-monitor mutex) |
+| F-01/F-02: Timeout flags incorrectly placed and microsecond-vs-second confusion | NFR-002 (Node-side wall-clock budget, not relying on FFmpeg's own option) |
+| F-03/F-04: Magic-number flag values | Documented preference for named flag values where applicable |

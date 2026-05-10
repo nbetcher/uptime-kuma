@@ -187,20 +187,35 @@ Negligible.
 
 ## 4. Threshold selection
 
-Defaults proposed:
+Default: **24 of 128**, user-adjustable per monitor on a slider.
 
-- **Threshold = 24 of 128** (combined luminance + edge dHash).
-- Equivalent to ~19% bit-flip tolerance, which is well above the
-  same-scene/different-lighting noise floor (~10–15%) and well below
-  the different-scene floor (~40–50%). `[MEDIUM]` based on Zauner's
-  empirical bounds on dHash; should be tuned during implementation
-  with real footage.
-- User-overridable per monitor (slider 8–48 with help text explaining
-  trade-offs: lower = stricter, higher = looser).
+### What the number actually means
 
-The threshold is stored on the monitor row, not as a global setting,
+Hamming distance counts differing bits between two 128-bit fingerprints.
+Calibration table for an adversarial reviewer (or a UI tooltip):
+
+| Distance | Interpretation |
+|---|---|
+| 0 / 128 | Identical fingerprints (same image, no JPEG re-encoding noise) |
+| 1–8 / 128 | Essentially identical (negligible noise) |
+| 9–16 / 128 | Same scene, minor variation (slight camera shift, small JPEG-quality change) |
+| **17–24 / 128** | **Same scene, notable variation — different time of day, mild weather change, slight zoom drift** |
+| 25–40 / 128 | Same scene with substantial change, OR closely related but materially different scenes |
+| 41–60 / 128 | Different scenes that share some structure |
+| 61–127 / 128 | Unrelated scenes (random pairs average ~64 = 50% bit flip) |
+
+Default 24 lands in the "same scene, notable variation" band — the
+camera-monitoring sweet spot. It tolerates day-to-night swing on the
+edge half of the fingerprint, accepts moderate lighting changes, and
+still rejects "camera bumped onto a different wall."
+
+User-overridable per monitor (slider 8–48 with the table above as
+inline help). Stored on the monitor row, not as a global setting,
 because different scenes have different inherent variability (a busy
 street has more frame-to-frame variation than a hallway).
+
+`[MEDIUM]` confidence on default 24 — based on Zauner's empirical bounds
+on dHash; should be tuned during implementation with real footage.
 
 ## 5. Reference storage and acquisition
 
@@ -229,31 +244,44 @@ since SQLite check constraints are awkward to migrate):
 
 ### Upload UX (BLOB path)
 
-1. User clicks "Upload Day reference."
-2. UI offers a file picker AND a button "Capture from current stream"
-   that triggers a one-shot Enhanced-mode capture, returning the JPEG
-   to the form for the user to confirm.
-3. On submit, the file is sent to a new endpoint
-   (`POST /api/monitor/:id/reference`).
-4. Server-side: re-encode via `sharp` to canonical form (max 640 px,
-   JPEG quality 85, EXIF stripped). Compute fingerprint. Store both.
+1. User clicks "Upload Day reference" and picks a file.
+2. On submit, the file is sent to a dedicated endpoint
+   (`POST /api/monitor/:id/reference`) — separate from the main
+   monitor save, to keep the WebSocket-serialised monitor object lean.
+3. Server-side: re-encode via `sharp` to canonical form (max 640 px on
+   the long edge, JPEG quality 85, EXIF stripped). Compute fingerprint.
+   Store BLOB and fingerprint atomically.
+4. UI confirms with the canonical thumbnail and resolution/size summary.
 
 ### URL path
 
 1. User pastes URL.
 2. On submit, the URL is fetched (with the SSRF protections in
    NFR-022). Same re-encoding and fingerprinting pipeline.
-3. The URL is stored alongside, so subsequent re-fetches can refresh
-   the reference if the user edits it. The fetched bytes are *not*
-   re-fetched on every monitor check — only the cached BLOB is used at
-   check time. The URL is for re-acquisition convenience, not for
-   per-check fetching.
+3. The URL is stored alongside the cached BLOB, so an explicit
+   "Refresh" button (UI-affordance next to the URL field) can re-fetch
+   on demand. The fetched bytes are *not* re-fetched on every monitor
+   check — only the cached BLOB is used at check time.
 
-`[HIGH]` confidence the BLOB path is the right pattern; `[MEDIUM]` on
-whether the URL field's value should re-fetch on edit or only on
-explicit "Refresh" — the latter is safer (stable references, less
-surprise), the former is slicker. **PROPOSED:** explicit "Refresh"
-button next to the URL field; URL is informational on save.
+### Lazy-load on the edit form
+
+Because monitor objects are serialised over WebSockets to the frontend,
+embedding multi-KB reference BLOBs in the default serialisation would
+be wasteful (every monitor list refresh, every status push). Instead:
+
+- The default `Monitor.toJSON()` MUST exclude the BLOB columns (and
+  include `referenceDayHasBlob: true`/`false` flags so the UI knows
+  whether one exists).
+- A dedicated GET endpoint (`GET /api/monitor/:id/reference/:slot`)
+  serves the BLOB on demand.
+- The edit form fetches the BLOB(s) only when the user opens the
+  "Reference Images" section (the existing
+  `<details>`/accordion pattern that other Uptime Kuma monitor types
+  use for advanced configuration).
+
+`[HIGH]` confidence the BLOB-on-row pattern is right and matches the
+fork owner's instruction. `[HIGH]` on the lazy-load approach for
+WebSocket payload hygiene.
 
 ## 6. End-to-end Full-mode flow
 

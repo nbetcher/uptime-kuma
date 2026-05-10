@@ -3,9 +3,18 @@
 This directory contains the formal requirements and design-level documentation
 for adding RTSP and RTMP video-stream monitoring to this Uptime Kuma fork.
 
-**Status:** Planning only. No code changes are gated on these documents. A
-High-Level Design Specification will follow once these are reviewed,
-critiqued, and approved.
+**Status:** Round 2 — round-1 decisions captured in
+**[08-open-questions.md](./08-open-questions.md)** decisions log. Round-2
+adversarial review pending. A High-Level Design Specification will follow
+once round-2 review is complete and the remaining items in §08 (Q13–Q20) are
+either resolved or explicitly deferred.
+
+**Implementation strategy (agreed by fork owner):**
+1. **PR 1 (fork-only):** all three modes shipped together to `nbetcher/uptime-kuma`.
+2. **PR 2 (upstream):** Basic mode only, extracted as a clean subset.
+3. **PR 3 (upstream):** Enhanced mode, layered on the merged Basic.
+
+Full mode is fork-specific. Branches will be created at implementation time.
 
 **Audience:** the fork owner (primary reviewer, adversarial disposition),
 future implementers, and — if any subset is ever proposed for upstream — the

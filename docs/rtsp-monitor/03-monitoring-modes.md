@@ -100,13 +100,20 @@ Pull a small number of decoded frames in-memory, validate each, and
 detect frozen-frame stalls.
 
 - **Frames captured:** 5 by default (configurable 2–15).
-- **Capture path:** FFmpeg input demuxer → image2pipe MJPEG encoder →
-  in-memory `Buffer`. No temp files. See
-  **[08-open-questions.md](./08-open-questions.md)** §3 for the
-  open question on whether to use the FFmpeg subprocess (your stated
-  preference) or `node-av` (louislam's stated preference).
-- **Wall-clock budget:** 10 s default, configurable 5–30 s. Subprocess
-  hard-killed at budget + 5 s as a backstop.
+- **Capture path:** `node-av` opens the input, decodes the first
+  available video stream, returns frames as raw image buffers in
+  memory. No temp files, no subprocess, no stdout pipe. See
+  **[06-prior-art-review.md](./06-prior-art-review.md)** §6 for why
+  `node-av` was chosen over a FFmpeg subprocess.
+- **Wall-clock budget:** scales with the monitor `interval`. Default is
+  `min(max(interval / 3, 5), 30)` seconds — i.e. one third of the
+  interval, clamped to [5 s, 30 s]. So a 60 s interval gives a 20 s
+  budget; a 5 s interval clamps to 5 s; a 5-min interval clamps to 30 s.
+  User-overridable per monitor.
+- **Hard backstop:** the `node-av` decode session is wrapped in a
+  Promise that rejects at budget; on rejection, the session is closed
+  and resources released. No subprocess to kill — `node-av` cleanup is
+  in-process.
 - **Decoder validation per frame:** JPEG magic bytes (`FF D8 FF` start,
   `FF D9` end), non-zero size, sane dimensions (≥ 64×64, ≤ 16384×16384).
   Reject frames that fail any of these.
@@ -132,25 +139,14 @@ detect frozen-frame stalls.
 
 ### Resource cost
 
-- One FFmpeg subprocess (or `node-av` decode session) per check.
+- One `node-av` decode session per check (in-process, no subprocess).
 - 1–5 MB network depending on resolution and bitrate; bound by the
   wall-clock budget.
-- ~20 MB peak RSS in the FFmpeg child (typical 1080p H.264 decode).
+- ~20 MB peak heap during decode (typical 1080p H.264 decode), released
+  on session close.
 - 5 small JPEG buffers held in Node memory (~50–500 KB total) for the
   duration of the check, then freed.
 - 0 disk writes.
-
-### Why this differs from the user's existing script
-
-The existing `check_rtsp_stream_up.sh` writes JPEGs to a fixed temp
-directory and judges liveness by `5.jpg > 85000 bytes`. That heuristic
-is fragile in three ways: it is resolution-dependent, complexity-
-dependent, and fails to detect frozen-frame conditions. Enhanced mode
-checks dimension validity (resolution-independent), inspects all
-captured frames (complexity-independent), and explicitly tests for
-freeze (catches PoleTransformer's case). Twelve specific issues with the
-script and how each is resolved are detailed in
-**[07-script-analysis.md](./07-script-analysis.md)**.
 
 ## 5. Full mode
 
@@ -162,11 +158,11 @@ valid-but-wrong video (e.g., colour bars, default test pattern).
 
 ### Mechanism
 
-A single keyframe is captured (not 5 — one suffices for similarity), then
-fingerprinted and compared against the user's reference image(s).
+A single frame is captured, fingerprinted, and compared against the user's
+reference image(s).
 
-- **Capture:** one frame via the same FFmpeg/`node-av` path as Enhanced,
-  but with `-frames:v 1`.
+- **Capture:** one frame via the same `node-av` path as Enhanced, exiting
+  as soon as the first decoded video frame is available.
 - **Fingerprint:** `sharp` pipeline to greyscale → normalise → resize 32×32
   → compute combined fingerprint (dHash + edge-aware variant + mean
   luminance). Full algorithm and rationale in
@@ -198,21 +194,30 @@ Same as Enhanced for capture, plus:
 - A few KB of memory for the fingerprints; references are held in cache
   (see NFR-005 in **[04-requirements.md](./04-requirements.md)**).
 
-## 6. Frame capture: subprocess vs. in-process
+## 6. Frame capture: `node-av`
 
-The two viable implementations are:
+Decoded frames are produced by `node-av`, the N-API bindings to FFmpeg
+that `@louislam` recommended in the comments of PR #5822. The library
+ships prebuilt binaries via npm optional-deps for Linux/macOS/Windows ×
+x64/arm64; FFmpeg itself is bundled. No system FFmpeg is required, no
+PATH detection runs, and no subprocess is spawned.
 
-- **A.** Spawn `ffmpeg`/`ffprobe` as a subprocess, pipe MJPEG to stdout,
-  parse the byte stream. Existing-pattern: `tailscale-ping` and `apprise`
-  do this kind of thing in Uptime Kuma already.
-- **B.** Use `node-av` (louislam's own suggestion in the comments of
-  PR #5822). N-API bindings to FFmpeg with prebuilt platform binaries.
-  No subprocess, no PATH detection, no zombie children.
+Operationally:
 
-Tradeoffs and a recommendation are deferred to
-**[08-open-questions.md](./08-open-questions.md)** §3 because this is the
-single highest-stakes design decision in the project. Whatever is chosen,
-both Enhanced and Full use the same code path.
+- The `node-av` session opens the input URL, demuxes, decodes the first
+  video stream, and emits decoded frames as `Buffer`s.
+- Frames are converted to JPEG in memory via either `node-av`'s
+  encoder or `sharp`, depending on which is faster on the target
+  platform — to be benchmarked at HLD time.
+- Session close is awaited in a `finally`, releasing all libav state.
+- Authentication credentials, when supplied, are passed via the
+  `node-av` input options (matching FFmpeg's `-rtsp_transport`,
+  username/password URL components, or the dedicated AVDictionary
+  options for Digest auth).
+
+Both Enhanced and Full use this same path. The interface is small enough
+that swapping implementations later (e.g., to a subprocess fallback for
+edge platforms `node-av` doesn't prebuild for) would be localised.
 
 ## 7. Behaviour shared across modes
 

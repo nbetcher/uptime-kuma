@@ -128,13 +128,24 @@ frame against both, compute Hamming distance to each, and pass if the
 #### FR-019 — Reference image source: BLOB and URL
 **Must.** **REQUIRED-BY-BRIEF.**
 The UI MUST allow the user to either upload a reference image (stored as
-a BLOB on the monitor row) or supply a URL the monitor fetches at check
-time. The two sources are exclusive per slot.
+a BLOB on the monitor row) or supply a URL that is fetched at upload
+time and cached as a BLOB. The two sources are exclusive per slot.
 - **Source:** Brief, user-confirmed in clarifying questions ("BLOB *and*
   URL").
-- **Acceptance:** uploading produces a row with `reference_day` BLOB
-  populated and `reference_day_url` NULL; choosing URL is the inverse;
-  switching one to the other clears the discarded value.
+- **Acceptance:** uploading produces a row with `reference_day_blob`
+  populated; choosing URL fetches once and populates the same BLOB plus
+  `reference_day_url`; runtime checks ALWAYS use the cached BLOB, never
+  fetch the URL.
+
+#### FR-019b — Reference required at save time for Full mode
+**Must.** **PROPOSED.** Resolves Q5(a).
+Saving a monitor in Full mode MUST fail UI validation if no reference is
+configured. Specifically: at least one reference (Day or single) MUST be
+present; if "Separate Day/Night" is enabled (default), BOTH Day and
+Night MUST be present.
+- **Source:** User decision on Q5(a).
+- **Acceptance:** form submission with Full mode and no reference
+  produces a validation error and does not save the monitor.
 
 ### A.3 Protocol coverage
 
@@ -172,19 +183,11 @@ with a per-monitor toggle to disable for self-signed deployments.
 RTMPS MUST be supported with the same TLS validation toggle as RTSPS.
 - **Acceptance:** RTMPS fixtures parallel to FR-022's pass.
 
-#### FR-025 — RTSP over DTLS
-**Won't.** **PUSHBACK.**
-The original brief asked us to plan for RTSP over DTLS. Research found
-no RFC, no FFmpeg flag, no maintained library, no vendor support.
-- **Source:** Pushback documented in
-  **[08-open-questions.md](./08-open-questions.md)** §1.
-- **Acceptance:** no DTLS code paths exist.
-
 #### FR-026 — RTMP over UDP
-**Won't.** **PUSHBACK.**
+**Won't.** **PUSHBACK (accepted).**
 RTMP is TCP-only by specification.
-- **Source:** Pushback documented in
-  **[08-open-questions.md](./08-open-questions.md)** §2.
+- **Source:** Pushback resolved in
+  **[08-open-questions.md](./08-open-questions.md)** decisions log.
 - **Acceptance:** no UDP code paths exist for RTMP.
 
 ### A.4 Authentication
@@ -218,6 +221,16 @@ component (the masked-credentials input used elsewhere in Uptime Kuma).
 - **Source:** `@CommanderStorm`'s explicit review of PR #5954.
 - **Acceptance:** the EditMonitor template renders `HiddenInput` for the
   password field.
+
+### A.4b Codec coverage
+
+#### FR-035 — Common codec support
+**Must.** **PROPOSED.** Resolves Q4.
+The monitor MUST decode H.264, H.265 (HEVC), and AV1 streams via the
+chosen decode stack (`node-av`). No explicit codec filter is applied;
+whatever the stack supports, the monitor supports.
+- **Acceptance:** unit fixtures (or staged integration tests) cover at
+  minimum H.264 and H.265 RTSP streams.
 
 ### A.5 UI / UX
 
@@ -259,18 +272,145 @@ metadata.
 - **Acceptance:** a 4K reference uploaded ends up ≤ 80 KB in the BLOB
   column; EXIF/GPS tags are absent.
 
-#### UI-005 — Mode warning when prerequisites missing
+#### UI-005 — Decode-stack failure surfaces clearly
 **Must.** **PROPOSED.**
-If Enhanced or Full is selected but the underlying decode stack
-(FFmpeg / `node-av` — see
-**[08-open-questions.md](./08-open-questions.md)** §3) is not
-available, the form MUST display a non-blocking warning AND the saved
-monitor MUST report DOWN with a clear `"Enhanced mode requires FFmpeg,
-not detected"` message rather than crashing.
+If `node-av` fails to load at server startup (e.g., the prebuilt
+binary for the platform is missing and source-build also failed), the
+RTSP monitor type MUST register itself in a degraded state:
+- The monitor type still appears in the dropdown.
+- Saving any monitor of this type produces a clear server-side error.
+- Existing monitors of this type produce DOWN heartbeats with the
+  message `"node-av failed to load — RTSP monitoring unavailable"`.
+- The server MUST NOT crash on startup because of this failure.
 - **Source:** "virtually impossible to fail for any reason at any
   point."
-- **Acceptance:** unit test removes FFmpeg from PATH and verifies the
-  monitor's check method returns a precise error message.
+- **Acceptance:** unit test simulates a `node-av` import failure and
+  verifies the server starts cleanly, the monitor type is registered,
+  and existing monitors report the precise error message.
+
+#### UI-007 — Warn when URL contains `?rtsp_transport=`
+**Must.** **PROPOSED.** Resolves Q11.c.
+If the user-entered URL contains a `?rtsp_transport=` query parameter,
+the form MUST display a non-blocking warning beneath the URL field
+indicating that transport is configured by the dedicated UI option, and
+the URL parameter will be ignored.
+- **Acceptance:** entering
+  `rtsp://host/path?rtsp_transport=tcp` shows a warning chip; saved
+  monitor's transport is the form's selected value.
+
+#### UI-008 — Tooltip clarifying "RTSP/UDP" semantics
+**Must.** **PROPOSED.**
+The transport selector's "RTSP/UDP" option MUST display a `?` tooltip
+(matching the existing Uptime Kuma tooltip pattern) clarifying that
+this means RTSP control over TCP with RTP media over UDP — not
+RTSP-control-over-UDP, which is unsupported.
+- **Source:** User decision on the protocol-naming clarification.
+- **Acceptance:** the tooltip text reads, in substance: "RTSP control
+  is always over TCP; this option uses UDP for the actual RTP video
+  packets, which is the form most cameras call 'UDP transport.'"
+
+#### UI-009 — Path field tooltip with vendor examples
+**Must.** **PROPOSED.** Resolves Q11.a.
+The Path field MUST expose vendor-specific RTSP-path conventions for
+the five most popular homelab/consumer camera vendors as inline help
+(tooltip or expanded help block, whichever Uptime Kuma's pattern is for
+larger inline help). Concise but clear.
+- **Source:** User decision on Q11.a.
+- **Suggested content** (subject to verification at HLD time, since
+  vendor URLs change with firmware):
+  - **Hikvision:** `/Streaming/Channels/101` (main) or `/102` (sub)
+  - **Dahua / Amcrest:** `/cam/realmonitor?channel=1&subtype=0` (main),
+    `subtype=1` (sub)
+  - **Reolink:** `/h264Preview_01_main` or `/h264Preview_01_sub`
+  - **Axis:** `/axis-media/media.amp`
+  - **Unifi:** `/<random-token>` (assigned by the controller per camera)
+  - **Note line:** "Consult your camera's documentation; paths vary by
+    firmware version."
+- **Acceptance:** the help element exists and contains the five
+  vendor entries above; the entries pass a basic smoke check at HLD
+  time against current vendor docs.
+
+#### UI-010 — "Test" button on the edit form
+**Must.** **PROPOSED.** Resolves Q12.f.
+The edit form MUST include a one-shot probe button that runs the
+selected mode's check against the entered configuration and reports
+the result in-line. The button label MUST match Uptime Kuma's existing
+verbiage for similar affordances (research at HLD time; if there's no
+existing precedent, "Test" is the proposed label).
+- **Source:** User decision on Q12.f.
+- **Acceptance:** clicking the button against a working stream
+  produces an UP-style result panel; against an unreachable stream
+  produces the same DOWN-style message format that the heartbeat
+  would.
+
+#### UI-011 — Test button reports keyframe interval
+**Should.** **PROPOSED.** Resolves Q12.a.
+When Enhanced or Full mode is selected, the Test button SHOULD measure
+the I-frame (keyframe) interval of the stream and warn the user if
+the interval exceeds half the configured monitor `interval`. A camera
+with a 10-second keyframe interval on a 5-second monitor interval will
+intermittently fail because the first keyframe may arrive after the
+wall-clock budget expires.
+- **Source:** User decision on Q12.a.
+- **Acceptance:** Test against a fixture with a 10-second keyframe
+  interval and a 5-second monitor interval emits a "keyframe interval
+  is longer than half your monitor interval" warning.
+
+#### UI-012 — Lazy-load reference BLOBs in the edit form
+**Must.** **PROPOSED.** Resolves Q7.
+Reference image BLOBs MUST NOT be included in the default
+WebSocket-serialised monitor object. Instead, the monitor JSON
+includes boolean `referenceDayHasBlob` / `referenceNightHasBlob`
+flags, and the edit form fetches the BLOB(s) on demand from a
+dedicated endpoint (`GET /api/monitor/:id/reference/:slot`) when the
+Reference Images section is opened.
+- **Source:** User decision on Q7.
+- **Acceptance:** initial monitor list payload size is unchanged
+  whether references are configured or not; opening the references
+  section issues an HTTP GET that returns the BLOB.
+
+#### UI-013 — Status-page thumbnail of last matching frame
+**Should.** **PROPOSED.** Resolves Q12.g (first half), default off.
+Full-mode monitors MAY surface a thumbnail of the most recent matching
+frame on status pages. This is OFF by default and per-monitor opt-in
+to respect privacy; when enabled, the thumbnail is derived from the
+last UP-result captured frame, re-resampled to a status-page-sized
+JPEG and stored alongside the monitor's last-match data.
+- **Source:** User decision on Q12.g.
+- **Acceptance:** toggle on, status-page rendering shows a recent
+  thumbnail; toggle off, no image surfaces.
+
+#### UI-014 — Status-page thumbnails of last 5 DOWN frames
+**Should.** **PROPOSED.** Resolves Q12.g (second half), default off.
+When status-page thumbnails are enabled, the monitor's incident-detail
+view MAY surface up to the **5 most recent DOWN frames** captured by
+the monitor. Storage is bounded by a small dedicated table:
+`monitor_rtsp_down_image (id PK, monitor_id FK, captured_at, image_blob)`.
+On every DOWN heartbeat that successfully captured a frame, INSERT a
+row, then DELETE rows for that monitor where the `captured_at` is
+older than the 5th most recent — atomic, no daemon, no cron. Storage
+ceiling: ~5 × ~80 KB = ~400 KB per monitor.
+- **Source:** User decision on Q12.g extension.
+- **Implementation note:** if at HLD time the small-table pattern
+  doesn't fit cleanly with Uptime Kuma's existing patterns (no
+  precedent for similar bounded-history tables), the entire feature
+  — including UI-013 thumbnails and image storage — is dropped per
+  the user's contingency, and a TODO is logged for the future
+  webhook-based alternative (see UI-015).
+- **Acceptance:** running 6 successive DOWN checks results in exactly
+  5 rows in the new table for that monitor.
+
+#### UI-015 — Future webhook outputs (documented, not implemented)
+**Won't (this work).** **PROPOSED future-work docket.** Resolves Q12.h.
+Documented for a future sprint; NOT implemented in this work:
+- Webhook on Full-mode distance climbing toward threshold (early
+  warning).
+- Webhook POST of periodic UP-mode frames (configurable interval) and
+  every DOWN-mode frame to a user-specified URL, so images need not
+  be stored in Uptime Kuma's database at all. Replaces UI-013/UI-014
+  for users who'd rather externalise image retention.
+- **Source:** User decision on Q12.h.
+- **Acceptance:** an entry exists in the future-work docket.
 
 #### UI-006 — Translation keys fully qualified
 **Must.** **PROPOSED.**
@@ -284,34 +424,41 @@ or `"Path"` MUST NOT be added.
 
 ### A.6 Operations
 
-#### OP-001 — Decode stack auto-detect
-**Must.** **PROPOSED.**
-At server startup, detect the available decode stack: (a) bundled
-binary (Docker image), (b) system FFmpeg on `PATH`, (c) `node-av` (if
-chosen). Cache the result. Surface it via a `/api/health` debug field.
-- **Source:** User-selected ffmpeg strategy ("Both: bundle in Docker
-  AND prefer system ffmpeg if present").
-- **Acceptance:** unit tests cover all three detection branches.
+#### OP-001 — `node-av` is the decode stack
+**Must.** **PROPOSED.** Resolves Q3 (and supersedes earlier
+draft of OP-001 / OP-002 about FFmpeg subprocess detection).
+The implementation MUST use `node-av` (`seydx/node-av`) as the in-process
+decode stack. No system FFmpeg detection, no PATH search, no subprocess
+spawn. `node-av`'s prebuilt binaries cover the platforms Uptime Kuma
+ships to.
+- **Source:** User decision on Q3, aligning with `@louislam`'s recommendation
+  on PR #5822.
+- **Acceptance:** `package.json` adds `node-av` as a dependency; no
+  `child_process.spawn("ffmpeg")` exists in the new code.
 
-#### OP-002 — Decode stack precedence
-**Must.** **PROPOSED.**
-Resolution order MUST be: (1) explicit `FFMPEG_PATH` env var if set,
-(2) system FFmpeg on `PATH`, (3) bundled binary (Docker image only).
-Logged once at startup at INFO level.
-- **Source:** Per user clarifying-question answer.
-- **Acceptance:** test that sets `FFMPEG_PATH` to a fake binary
-  observes that path used.
+#### OP-002 — Implementation factored behind a `FrameSource` interface
+**Should.** **PROPOSED.**
+The decode-source code MUST be wrapped behind a small internal
+interface (proposed: `FrameSource.open(url, opts)`,
+`FrameSource.next()`, `FrameSource.close()`) so a future replacement
+(e.g., a subprocess fallback for an edge platform `node-av` cannot
+prebuild for) is a localised change. The default and only initial
+implementation is `NodeAvFrameSource`.
+- **Acceptance:** the interface and its single implementation are
+  separately testable; substitute implementations in tests use a stub
+  that emits canned JPEGs.
 
-#### OP-003 — Subprocess hard-kill backstop
+#### OP-003 — Decode session hard-stop
 **Must.** **PROPOSED.**
-Every FFmpeg subprocess MUST be wrapped in a wall-clock timeout. SIGTERM
-at the budget; SIGKILL at budget + 5 s. The subprocess MUST be reaped
-even if Node receives an exception during the await.
-- **Source:** Defensive design; the existing bash script's hang-prone
-  invocation is the cautionary tale (see
-  **[07-script-analysis.md](./07-script-analysis.md)**).
-- **Acceptance:** a fixture that hangs FFmpeg on stdin produces no
-  zombie children after 30 s.
+Every `node-av` decode session MUST be wrapped in a Promise that
+rejects at wall-clock budget. On rejection, the session is closed and
+all libav resources released in a `finally`. The implementation MUST
+ensure no Node-side handles or libav contexts leak across check
+invocations.
+- **Source:** Defensive design.
+- **Acceptance:** stress test of 1,000 sequential checks against a
+  hung fixture results in stable RSS (no leak) and zero orphaned
+  decode sessions.
 
 #### OP-004 — No temp-file usage
 **Must.** **REQUIRED-BY-BRIEF.**
@@ -332,7 +479,31 @@ URL-fetch) and cached in a column on the monitor row, so each check
 only fingerprints the live frame.
 - **Source:** Efficiency budget.
 - **Acceptance:** a 1-minute interval Full-mode monitor's average
-  per-check CPU is dominated by FFmpeg, not by `sharp`.
+  per-check CPU is dominated by libav decode, not by `sharp`.
+
+#### OP-007 — Audit log of reference upload/refresh
+**Must.** **PROPOSED.** Resolves Q12.e.
+Every reference-image upload (BLOB or URL) and every URL "Refresh"
+action MUST be recorded with at minimum: monitor id, slot (Day /
+Night / single), source (upload / url-fetch), byte size, sha-256 of
+canonical bytes, originating user (if Uptime Kuma's auth context
+provides one), timestamp. Stored in a small audit table aligned with
+Uptime Kuma's existing audit/log patterns (or in
+`monitor.notification_id_list`-style metadata if no audit subsystem
+exists — to be confirmed at HLD time).
+- **Source:** User decision on Q12.e.
+- **Acceptance:** uploading and then refreshing a reference produces
+  two audit records visible to the user.
+
+#### OP-008 — Bounded DOWN-image storage cleanup
+**Must (if UI-014 is kept).** **PROPOSED.**
+The cleanup of older-than-5 DOWN images for a monitor MUST run inside
+the same SQL transaction as the INSERT, so the table size never
+exceeds 5 entries per monitor at any commit boundary. No daemon, no
+cron.
+- **Source:** User concern about cleanup; resolved by inline DELETE.
+- **Acceptance:** concurrent INSERTs against the same monitor (forced
+  via test) never produce a > 5-row state.
 
 #### OP-006 — URL-reference fetch hardening
 **Must.** **PROPOSED.**
@@ -358,29 +529,34 @@ Basic-mode CHECK function MUST complete in < 1 s under nominal network
   measures median check latency < 200 ms.
 
 #### NFR-002 — Enhanced/Full-mode budget
-**Must.** **PROPOSED.**
-Enhanced and Full mode CHECK functions MUST complete in ≤ user-
-configured wall-clock budget (default 10 s, max 30 s) plus 5 s of
-hard-kill grace.
-- **Acceptance:** a fixture that emits exactly 5 frames at 1 fps
-  finishes in ≤ 6 s; one that hangs is killed by 16 s.
+**Must.** **PROPOSED.** Resolves Q11.b (wall-clock).
+Enhanced and Full mode CHECK functions MUST complete within a
+wall-clock budget that scales with the monitor's `interval`:
+`budget = clamp(interval / 3, 5, 30)` seconds. Per-monitor override
+permitted in the form. Hard-stop applied at `budget` (not `budget + 5`,
+since `node-av` cleanup is in-process and bounded).
+- **Source:** User decision on Q11.b.
+- **Acceptance:** a fixture that emits exactly 5 frames at 1 fps on a
+  60-second-interval monitor finishes in ≤ 6 s; one that hangs is
+  hard-stopped at the 20-second budget.
 
 #### NFR-003 — Memory budget per check
 **Should.** **PROPOSED.**
 Enhanced/Full mode SHOULD peak at ≤ 50 MB RSS *increase* per check,
-including the FFmpeg subprocess.
+including the libav decoder state held by `node-av`.
 - **Acceptance:** observed against a 1080p H.264 fixture; documented
   in the test plan.
 
 #### NFR-004 — Concurrency cap
-**Must.** **PROPOSED.**
+**Must.** **PROPOSED.** Resolves Q9.
 The number of concurrently-active Enhanced/Full mode checks across all
-monitors MUST be capped (default 4, configurable via env var). Excess
-checks queue with a sane wait-then-skip policy.
-- **Source:** Resource hygiene; prevents N-camera deployments from
-  saturating a small VPS.
-- **Acceptance:** test runs 20 monitors concurrently, observes never
-  more than 4 FFmpeg processes alive at once.
+monitors MUST be capped at `max(2, min(4, floor(os.cpus().length / 2)))`
+by default, with a `RTSP_CONCURRENCY` env var override. Excess checks
+queue with a sane wait-then-skip policy.
+- **Source:** Resource hygiene; user decision on Q9.
+- **Acceptance:** test runs 20 monitors concurrently on a 2-core
+  machine, observes never more than 2 active decode sessions at once;
+  on an 8-core machine, never more than 4.
 
 #### NFR-005 — Reference-fingerprint reuse
 **Must.** Implements OP-005 above.
@@ -465,16 +641,62 @@ the monitor type class, matching the existing pattern in
 `server/monitor-types/monitor-type.js:23-35`.
 - **Acceptance:** CI workflow lint job is green.
 
-#### NFR-031 — Test coverage
-**Must.** **REQUIRED-BY-BRIEF (CommanderStorm pattern).**
-Every monitor type method MUST have unit tests in
-`test/backend-test/test-rtsp.js`, covering at minimum: protocol-success,
-connection-failure, timeout, malformed-response, vendor-quirk-401,
-non-RTSP-on-port, frozen-frame (Enhanced), black-frame (Enhanced),
-match-success (Full), match-fail (Full), match-day (Full), match-night
-(Full).
-- **Source:** Brief; CommanderStorm's review pattern.
-- **Acceptance:** the test list is implemented and passes.
+#### NFR-031 — Comprehensive unit-test coverage
+**Must.** **REQUIRED-BY-BRIEF (owner emphasis + CommanderStorm pattern).**
+Every requirement in this document with measurable runtime behaviour
+MUST have at least one corresponding unit test. The test files MUST
+follow the existing `test/backend-test/` patterns (Node 20+ built-in
+`test` module, `describe`/`test` structure as seen in
+`test/backend-test/test-monitor-response.js`), MUST use the same
+linting / formatting conventions, and MUST run as part of
+`npm run test-backend` without modification to test infrastructure.
+At minimum, the test suite covers:
+- **Protocol coverage:** protocol-success for RTSP, RTSPS, RTMP, RTMPS
+  each; connection-failure; timeout; malformed-response;
+  vendor-quirk-401 (Hikvision); Dahua-spaced-realm; non-RTSP-on-port
+  (HTTP-on-554); 5xx-with-warning.
+- **Mode behaviour:** Basic-pass (each protocol); Enhanced-pass;
+  Enhanced-frozen-frame; Enhanced-black-frame; Enhanced-only-1-of-5;
+  Enhanced-zero-frames; Full-pass-Day; Full-pass-Night;
+  Full-day-night-min-distance; Full-mismatch; Full-pre-flight-luminance
+  short-circuit.
+- **Validation:** missing-reference-rejected (FR-019b);
+  URL-with-rtsp-transport-warns (UI-007); URL-credentials-and-form-
+  credentials-conflict-warns; reference-resampled-on-upload (UI-004);
+  reference-EXIF-stripped (NFR-023).
+- **Security:** credential-redaction-in-logs (NFR-020);
+  credential-redaction-in-heartbeat (NFR-020); SSRF-rejection-link-local
+  (OP-006); SSRF-rejection-loopback (OP-006); SSRF-allows-private-when-
+  monitored-host-is-private (OP-006); TLS-validation-on-by-default
+  (NFR-021); TLS-validation-disabled-allows-self-signed.
+- **Robustness:** decode-session-cleanup-on-timeout (OP-003);
+  decode-session-cleanup-on-exception (OP-003); per-monitor-mutex
+  (NFR-014); concurrency-cap-honoured (NFR-004);
+  node-av-load-failure-graceful (UI-005).
+- **Storage / lifecycle:** down-image-cleanup-bounds (OP-008);
+  fingerprint-cache-populated-on-upload (OP-005); BLOB-excluded-from-
+  default-monitor-JSON (UI-012); reference-audit-record-written (OP-007).
+- **i18n:** every new key in `en.json` is referenced from at least one
+  Vue template (mirrors `extra/check-lang-json.js`).
+- Tests MUST mock the network using in-process stubs and MUST NOT
+  require a live media server in CI.
+- **Source:** Owner emphasis ("comprehensive unit tests that fall in
+  line with Uptime Kuma's requirements and standards"); brief #17;
+  `@CommanderStorm`'s review pattern.
+- **Acceptance:** every REQ-ID with runtime behaviour traces to ≥ 1
+  test; coverage report meets or exceeds the median of existing
+  monitor types in `server/monitor-types/`; all tests pass under
+  `npm run test-backend` and under `npm run test-backend-22`.
+
+#### NFR-031b — Round-trip integration test (manual / staged)
+**Should.** **PROPOSED.**
+A documented manual / staged integration test SHOULD exercise the
+monitor against real RTSP and RTMP servers (e.g., MediaMTX in a
+sidecar Docker container) at least once before each PR merge. This is
+NOT a CI requirement (CI tests are mocked per NFR-032) but documented
+as a pre-merge gate in the PR description template.
+- **Acceptance:** a runbook in this docs directory describes the
+  staged test (added at HLD time).
 
 #### NFR-032 — Mocked network in tests
 **Must.** **PROPOSED.**
@@ -493,14 +715,11 @@ column drops). They MUST be named per the existing
 
 #### NFR-034 — Minimal new dependencies
 **Must.** **REQUIRED-BY-BRIEF.**
-The implementation MAY add at most: (a) one image-processing library
-(sharp recommended; jimp acceptable if a no-native-dep rule applies),
-(b) zero or one decoding stack (FFmpeg subprocess vs `node-av` —
-exactly one chosen, see
-**[08-open-questions.md](./08-open-questions.md)** §3). No other new
-top-level dependencies.
-- **Acceptance:** `git diff package.json` shows ≤ 2 new entries in
-  `dependencies`, none in `devDependencies` beyond test fixtures.
+The implementation MUST add exactly two production dependencies:
+(a) `sharp` (image processing), (b) `node-av` (in-process FFmpeg
+bindings). No other new top-level dependencies.
+- **Acceptance:** `git diff package.json` shows exactly 2 new entries
+  in `dependencies`, none in `devDependencies` beyond test fixtures.
 
 ### B.5 Observability
 
@@ -514,9 +733,9 @@ can build alert rules around them. Documented patterns:
 - `"captured %d/%d frames in %dms"` (Enhanced UP)
 - `"frozen: %d identical frames"` (Enhanced DOWN)
 - `"black or uniform frame"` (Enhanced DOWN)
-- `"matched %s at distance %d/64"` (Full UP, %s = Day|Night|reference)
+- `"matched %s at distance %d/128"` (Full UP, %s = Day|Night|reference)
 - `"scene mismatch: distance %d > threshold %d"` (Full DOWN)
-- `"FFmpeg exit %d: %s"` (decode-stack failure)
+- `"decode failed: %s"` (decode-stack failure)
 - `"timed out after %dms"` (any mode)
 - **Acceptance:** the test suite lists each pattern as an expected
   message format.
@@ -558,12 +777,13 @@ upstream PR is mechanically a subset of the fork's work.
 | Won't | Rationale |
 |---|---|
 | RTSP control over UDP (raw, non-RTP) | No vendor support; see **[02-protocol-coverage.md](./02-protocol-coverage.md)** §3.1 |
-| RTSP over DTLS | Not a real protocol; see FR-025 |
 | RTMP over UDP | Not a real protocol; see FR-026 |
 | HLS / DASH / WebRTC / ONVIF / SRT / NDI | Out of scope; future work |
 | Recording / replay | Not a monitor's job |
 | Scene classification ML | Not a monitor's job |
 | `pixelmatch`-style strict diff | Wrong tool — too sensitive to camera artefacts. See **[05-image-comparison-strategy.md](./05-image-comparison-strategy.md)** §3 |
+| "Capture from current stream" reference button | Out of scope per fork-owner decision on Q11.d |
+| H.264 keyframe-only decoding (`-skip_frame nokey`) | Withdrawn — would slow Enhanced down, not speed it up; see **[08-open-questions.md](./08-open-questions.md)** decisions log on Q12.b |
 
 ---
 
@@ -571,9 +791,9 @@ upstream PR is mechanically a subset of the fork's work.
 
 - Every requirement above either implements an item from your original
   brief or adds protective scaffolding. Where I'm proposing a deviation
-  (FR-025, FR-026, FR-031, FR-032), the rationale is in
-  **[08-open-questions.md](./08-open-questions.md)** so you can attack
-  the reasoning directly.
+  (FR-026, FR-031, FR-032), the rationale is in
+  **[08-open-questions.md](./08-open-questions.md)** decisions log so
+  you can attack the reasoning directly.
 - Acceptance criteria are written so a green CI run can mechanically
   prove or disprove most items. The few that are subjective (UI
   parity, help-text quality) are flagged as such.

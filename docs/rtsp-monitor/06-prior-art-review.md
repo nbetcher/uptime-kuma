@@ -176,30 +176,41 @@ proposal:
 explaining the divergence so a future reviewer doesn't ask "why don't
 you use pixelmatch like #6325 does?"
 
-## 6. `node-av` (`seydx/node-av`)
+## 6. `node-av` — the chosen decode stack
 
-The library `@louislam` himself surfaced. N-API bindings to FFmpeg with
+`@louislam` surfaced this library in PR #5822's comments:
+
+> "FYI: Just saw node-av recently, which is ffmpeg bindings for Node.js."
+
+`node-av` (`seydx/node-av`) provides N-API bindings to FFmpeg with
 prebuilt binaries for Linux/macOS/Windows × x64/arm64. MIT-licensed
-wrapper; FFmpeg itself is LGPL/GPL.
+wrapper; FFmpeg itself is LGPL/GPL and bundled.
 
-Implications for our design:
+Why this is the right choice:
 
-- **Pro:** No subprocess, no PATH detection, no zombie children, no
-  stdout parsing. Decoded frames as `Buffer` objects directly. Aligns
-  with the maintainer's stated preference. Aligns with the brief's
-  "no temp storage" goal even more strongly than the FFmpeg
-  subprocess does.
-- **Con:** ~30–50 MB install footprint (prebuilds bundle FFmpeg).
-  Native binding — adds a compilation fallback if a platform isn't
-  prebuilt (Uptime Kuma supports many architectures via Docker).
-- **Con:** Younger and less battle-tested than spawning the canonical
-  `ffmpeg` binary.
+- **Maintainer signal.** louislam explicitly named it as the direction
+  to take when deep checks come.
+- **No subprocess.** No PATH detection, no zombie children, no stdout
+  parsing, no signal handling. Decoded frames arrive as `Buffer`s
+  directly from libav.
+- **No system FFmpeg required.** Removes an ops dependency entirely.
+  No Dockerfile changes, no `apt-get install ffmpeg` hooks for
+  non-Docker installs.
+- **Aligns with the brief's "no temp storage" goal** more strongly
+  than a subprocess does — frames are in-process buffers from the
+  first byte.
 
-Your earlier answer ("Both: bundle in Docker AND prefer system ffmpeg
-if present") implies subprocess. `node-av` is enough of an upgrade and
-enough of a maintainer signal that I'm raising it as an open question
-in **[08-open-questions.md](./08-open-questions.md)** §3 rather than
-silently overriding your selection.
+Costs accepted:
+
+- ~30–50 MB install footprint (prebuilds include FFmpeg).
+- Native binding — npm fallback to source-build on platforms without
+  prebuilds (rare given Uptime Kuma's Docker matrix).
+- Younger than canonical `ffmpeg`; smaller user base.
+
+The fork owner has confirmed this direction. The implementation
+factors the decode-source behind a small interface so a
+subprocess-based fallback could be added later if a target platform
+emerges that `node-av` cannot prebuild for.
 
 ## 7. CommanderStorm's review pattern, consolidated
 
@@ -218,24 +229,35 @@ Treat as a checklist for any code work that follows this planning phase:
 | 9 | Rebase cleanly | Process item, not a design item — flagged in **[08-open-questions.md](./08-open-questions.md)** §6 |
 | 10 | "Wall of Shame" for AI slop — `AGENTS.md` | NFR-050 |
 
-## 8. The scope-discipline tension
+## 8. The scope-discipline strategy: three PRs
 
 The original brief asks for all three modes from day one. `@CommanderStorm`'s
-guidance is "simple first, deep later, in separate PRs." These conflict
-*if* the work is destined upstream. They do not conflict on the fork.
+guidance is "simple first, deep later, in separate PRs." Both are honoured
+via a three-PR plan that the fork owner has agreed to:
 
-The design splits the difference:
+1. **PR 1 (fork-only)** — all three modes shipped together to the
+   `nbetcher/uptime-kuma` fork. Includes the Full mode, which is the
+   fork-specific feature CommanderStorm has not asked for. This PR does
+   *not* go upstream.
+2. **PR 2 (upstream)** — Basic mode only, extracted as a clean subset of
+   PR 1. Lands on `louislam/uptime-kuma`, satisfies CommanderStorm's
+   "simple first" guidance, and resolves issue #2851.
+3. **PR 3 (upstream)** — Enhanced mode, layered on top of the merged
+   Basic. Lands on `louislam/uptime-kuma`, addresses
+   `@PoleTransformer`'s black-screen failure mode (issue #2851 follow-up).
 
-- The **fork** can run all three modes from day one — the user owns the
-  fork and is the only consumer.
-- The **codebase** is structured so Basic is independently extractable
-  (NFR-051) — separate file, no Enhanced/Full imports, separate
-  migration. If a Basic-only PR is ever offered upstream, it is a
-  mechanical subset.
+Full mode is intentionally *not* proposed upstream. It is a fork-specific
+feature; the additional surface area (reference uploads, BLOB storage,
+fingerprint algorithm, audit logging) is heavier than what makes sense
+for the upstream community without a much broader user-base signal.
 
-This is documented as the recommended path in
-**[08-open-questions.md](./08-open-questions.md)** §6 so the reviewer
-can challenge it.
+NFR-051 (scope-split readiness) is what makes PRs 2 and 3 mechanically
+extractable: Basic lives in its own file, no compile-time or runtime
+imports of Enhanced/Full code, separate migration column subset. So the
+upstream branches are produced by `git rm` + targeted migration trim,
+not by re-authoring.
+
+Branches will be created at implementation time (one per PR), not now.
 
 ## 9. Items the user's brief mentioned that this section confirms
 

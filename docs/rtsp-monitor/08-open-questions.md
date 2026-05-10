@@ -1,405 +1,270 @@
-# 08 — Open Questions, Pushbacks, and Decisions Still to Make
+# 08 — Decisions Log and Remaining Open Questions
 
-This is the document I most want you to attack. Every item here is either
-something I am pushing back on from your original brief, an alternative I
-am proposing that you should weigh, or a decision that genuinely cannot be
-locked without your call.
-
-Numbering is durable so you can reference items by ID in critique.
+This document evolves with each adversarial review pass. Items at the top
+are resolved; items at the bottom are still open. New questions added in
+later rounds preserve original numbering and append a sub-letter (e.g.,
+Q9.b).
 
 ---
 
-## Q1. PUSHBACK: drop "RTSP over DTLS"
+## Resolved decisions (round 1)
 
-### Your brief
+### Q1 — RTSP-over-DTLS — RESOLVED: dropped
 
-> "RTSP over DTLS for RTSP UDP should be planned for (if this is even
-> something some vendors use: RTSP over DTLS), but not implemented yet,
-> with optional certificate validation."
+The original brief asked us to plan for it; research confirmed it isn't
+a real protocol. Owner accepted the pushback and asked that all mention
+be removed from documentation as if never suggested. Done — references
+purged from §01, §02, §04.
 
-You hedged ("if this is even something") — and you were right to hedge.
+### Q2 — RTMP-over-UDP — RESOLVED: dropped (FR-026 Won't)
 
-### My finding
+`[HIGH]` confidence: RTMP is TCP-only by specification. Owner accepted.
 
-`[HIGH]` confidence: RTSP over DTLS is not a thing.
+### Q3 — Decode stack: `node-av` chosen
 
-- No RFC describes it. RFC 2326 and RFC 7826 (the two RTSP RFCs) define
-  RTSP over reliable transports — TCP unreliable transport implementation
-  is left as an exercise but never standardised.
-- DTLS (RFC 6347) is intended for datagram (UDP) protocols. Pairing it
-  with RTSP-control would require RTSP to handle datagram boundaries,
-  loss, and reordering, none of which the protocol's text-line framing
-  supports.
-- DTLS-SRTP (RFC 5764) — the most likely source of confusion — is a
-  WebRTC-only construction. WebRTC uses ICE / SDP for signalling and
-  DTLS-SRTP for media keying. RTSP is not in the WebRTC stack.
-- No FFmpeg flag, no GStreamer element, no maintained client library, no
-  IP-camera vendor documentation references "RTSP-DTLS" or "RTSPS-UDP."
-- The closest real thing is **RTSPS over TCP with SRTP keyed by SDES**
-  (RFC 4568) on the media channel. SRTP-SDES is also rare in IP cameras
-  but at least exists in the standards.
+`@louislam`'s recommendation. Removes the need for system FFmpeg
+detection, PATH search, subprocess management, and zombie-process
+defence. Encoded as **OP-001 / OP-002 / OP-003** in
+**[04-requirements.md](./04-requirements.md)**. The wall-clock-budget
+backstop is now in-process (Promise rejection) rather than SIGKILL.
 
-### What I propose
+### Q4 — HEVC / H.265 / AV1 codec coverage — RESOLVED: supported
 
-**FR-025: Won't.** Drop RTSP-over-DTLS from this work entirely. If a
-specific vendor surface emerges, address it in a focused follow-up
-based on that vendor's actual protocol.
+Encoded as **FR-035**. `node-av` includes them; we don't filter.
 
-If the underlying intent was "encrypt the camera traffic," the answer
-that already exists is RTSPS (FR-022) — RTSP over TCP-TLS. Camera
-deployments that need encrypted *media* (rare) generally use SRTP under
-RTSPS, which is transparent to FFmpeg / `node-av`; we do not need to
-configure it.
+### Q5 — Behaviour when reference image is missing in Full mode — RESOLVED: option (a)
 
-### What you could choose instead
+Refuse to save. Encoded as **FR-019b**. UI validation rejects Full-mode
+saves without at least the required references.
 
-- **Accept the pushback.** Recommended.
-- **Reserve UI space for it anyway** with a "coming soon" toggle.
-  Cheap; zero implementation; introduces UI debt.
-- **Reject the pushback** and ask me to find or build *something* — but
-  that something would be vendor-specific and probably wouldn't be
-  RTSP at all.
+### Q6 — Three-PR scope split — RESOLVED: agreed
 
----
+- **PR 1 (fork-only):** all three modes shipped together to
+  `nbetcher/uptime-kuma`.
+- **PR 2 (upstream):** Basic mode only.
+- **PR 3 (upstream):** Enhanced mode.
 
-## Q2. PUSHBACK: drop "RTMP over UDP"
+Full mode is fork-specific. Branches will be created at implementation
+time. **NFR-051** (scope-split readiness) is the architectural
+constraint that makes PRs 2 and 3 mechanically extractable.
 
-### Your brief
+### Q7 — Reference BLOB storage and frontend serialisation — RESOLVED
 
-> "RTSP and RTMP over TCP and UDP should be supported."
+- Storage: BLOB column on the monitor row (built-in Uptime Kuma
+  database).
+- Frontend: BLOB excluded from default monitor JSON; a dedicated
+  endpoint serves the BLOB; the edit form fetches it lazily when the
+  references section is opened.
+- Encoded as **FR-019** (storage) and **UI-012** (lazy-load).
+- Implementation note: at HLD time, confirm which "accordion or
+  similar section" pattern Uptime Kuma's other monitor types use
+  (`<details>` element, Bootstrap collapse, custom Vue component) and
+  match it.
 
-For RTSP this resolves cleanly to "RTSP-control over TCP, RTP-media over
-TCP-interleaved or UDP" (FR-020 / FR-021).
+### Q8 — Minimum FFmpeg version — RESOLVED: superseded
 
-For RTMP the "over UDP" half is impossible.
+Originally framed for FFmpeg-subprocess scenarios. With `node-av`, the
+bundled libav version is whatever `node-av`'s prebuilds ship with —
+currently FFmpeg 6.x — so the "≥ 5.0" floor is automatically met. No
+explicit user-facing version requirement.
 
-### My finding
+### Q9 — Concurrency cap — RESOLVED: scaled by CPU count
 
-`[HIGH]` confidence: RTMP is TCP-only.
+Default: `max(2, min(4, floor(os.cpus().length / 2)))`. Override via
+`RTSP_CONCURRENCY` env var. Encoded as **NFR-004**.
 
-- RTMP framing (C0/C1 handshake, chunk streams, AMF) assumes ordered,
-  reliable byte delivery.
-- The UDP cousin from the same era is **RTMFP** (RFC 7016), which is a
-  separate protocol — peer-to-peer, NAT-traversing, used almost
-  exclusively by Adobe Flash applications. No IP camera ships with it.
-- No FFmpeg flag, no NGINX-RTMP option, no MediaMTX option.
+### Q10 — "RTSP and RTMP over TCP and UDP" semantics — RESOLVED
 
-### What I propose
+- RTSP/TCP: RTSP control on TCP/554, RTP media on TCP-interleaved.
+- RTSP/UDP: RTSP control on TCP/554, RTP media on UDP. Tooltip
+  clarifies the actual semantics — encoded as **UI-008**. UI label
+  stays compact.
+- RTMP/TCP: standard.
+- RTMP/UDP: dropped (FR-026).
 
-**FR-026: Won't.** RTMP-over-UDP is dropped. RTMP and RTMPS over TCP are
-fully supported (FR-023 / FR-024). If you eventually want RTMFP, that's
-a different monitor type — and there's no surveyed demand.
+### Q11.a — Path field tooltip — RESOLVED with vendor list
 
-### What you could choose instead
+Encoded as **UI-009**. Five-vendor list (Hikvision, Dahua/Amcrest,
+Reolink, Axis, Unifi) with concise path examples. Larger inline help
+block if Uptime Kuma has a precedent for that pattern.
 
-- **Accept the pushback.** Recommended.
-- **Reject and ask me to add RTMFP** — possible, but a separate monitor
-  type with a separate audience (effectively no one in the IP-camera
-  market).
+### Q11.b — Default thresholds — RESOLVED
 
----
+- **Wall-clock budget:** scales with monitor `interval`:
+  `clamp(interval / 3, 5, 30)` seconds. Encoded as **NFR-002**.
+- **Frame count for Enhanced:** 5 frames default. Already in **FR-013**.
+- **Match distance for Full:** 24 / 128. The "what does this mean"
+  question is answered with a calibration table now in
+  **[05-image-comparison-strategy.md](./05-image-comparison-strategy.md)** §4.
 
-## Q3. DECISION: FFmpeg subprocess vs. `node-av`
+### Q11.c — `?rtsp_transport=` URL parameter — RESOLVED: warning
 
-This is the highest-stakes design decision in the project. Your prior
-answer on the clarifying question selected:
+If the URL contains `?rtsp_transport=`, a non-blocking warning appears
+beneath the field. The dedicated transport selector is canonical.
+Encoded as **UI-007**.
 
-> "Both: bundle in Docker AND prefer system ffmpeg if present"
+### Q11.d — "Capture from current stream" reference button — RESOLVED: dropped
 
-That implies the **subprocess approach**: spawn `ffmpeg` as a child
-process, pipe MJPEG to stdout, read frames as `Buffer`.
+Out of scope. References are uploaded or URL-fetched only. The doc
+references to this button have been removed.
 
-`@louislam` (the Uptime Kuma project owner) recommended a different
-direction in PR #5822's comments:
+### Q12.a — I-frame interval check on Test button — RESOLVED: yes
 
-> "Just saw node-av recently, which is ffmpeg bindings for Node.js."
+The Test button measures keyframe interval and warns if it exceeds
+half the monitor `interval`. Encoded as **UI-011**.
 
-`node-av` (https://github.com/seydx/node-av) is N-API bindings to FFmpeg
-with prebuilt binaries for Linux/macOS/Windows × x64/arm64.
+### Q12.b — Keyframe-only decoding — RESOLVED: WITHDRAWN
 
-### Tradeoffs
+Owner is correct; my original proposal was wrong.
 
-| Aspect | FFmpeg subprocess | `node-av` |
-|---|---|---|
-| Maintainer signal | None / neutral | Endorsed by `@louislam` |
-| Install footprint | 0 (system) or ~50 MB (Docker bundle) | ~30–50 MB (npm prebuilds) |
-| Architectures | Whatever the system / Docker has | Linux/macOS/Win × x64/arm64 prebuilt; others compile (or fail) |
-| First-frame latency | ~50 ms subprocess startup overhead | ~5 ms (in-process) |
-| Memory model | Frames cross stdout pipe (one extra copy) | Frames are `Buffer` directly from libav |
-| PATH detection | Required (OP-001/002) | None |
-| Zombie risk | High; needs OP-003 hard-kill | None |
-| Failure mode on missing FFmpeg | Detected at startup; UI warning | Install fails at `npm install` time — can't run at all |
-| Failure mode on subprocess hang | Wall-clock backstop kills it | Can't hang the way a subprocess can; but a stuck `await` is still possible |
-| Maturity | Decades of FFmpeg + standard Node child_process | Newer; smaller user base; less battle-tested |
-| Upstream-PR optics | "Adds a binary" or "spawns subprocess" — reviewer may flag | Clean N-API dep; but also a heavier `package.json` change |
-| Fork-only optics | Either is fine | Either is fine |
+The decoder must process every byte that arrives on the wire whether
+it emits all output frames or only keyframes — the costly part is
+demuxing, parsing NAL units, and decoding (which depends on previous
+frames for P/B). `-skip_frame nokey` only changes which frames are
+*emitted*, not which are *processed*. For Enhanced (5 frames) it would
+slow the check down because we'd have to wait for more keyframes to
+accumulate; for Full (1 frame) it's a marginal win at best (one
+sub-GOP earlier). Withdrawn.
 
-### My honest read
+### Q12.c — One camera per monitor row — RESOLVED: confirmed
 
-- For the **fork**, either works. Pick the one with less ops burden for
-  *you*: subprocess if you'd rather see what's happening on the wire and
-  use the same `ffmpeg` binary you already operate, `node-av` if you'd
-  rather avoid PATH and zombie-process concerns entirely.
-- For an **upstream PR**, `node-av` carries the maintainer's own hint,
-  which is a non-trivial signal. But CommanderStorm has not commented on
-  `node-av` specifically; he might still argue for subprocess on
-  Docker-image-size grounds.
-- The **brief's "no temp storage, max efficiency"** weighs slightly
-  toward `node-av` (no subprocess overhead, no IPC).
-- The **brief's "minimal new dependencies"** weighs slightly toward
-  subprocess (`node-av` is one fairly chunky new dep; subprocess
-  requires no new deps if FFmpeg is already on the system).
+### Q12.d — Push-fallback / migration commentary — RESOLVED: dropped
 
-### What I propose
+Out of scope. The fork owner doesn't want migration advice on the
+existing script. Removed from **[07-script-analysis.md](./07-script-analysis.md)**.
 
-**Default to the subprocess approach** (matching your stated answer),
-with the implementation cleanly factored behind a `FrameSource` interface
-so substituting `node-av` later is a localised change.
+### Q12.e — Audit log of reference uploads — RESOLVED: yes
 
-But I'd like you to confirm or override before HLD. **DECISION REQUEST.**
+Encoded as **OP-007**.
 
----
+### Q12.f — "Test" button — RESOLVED: yes
 
-## Q4. DECISION: HEVC / H.265 / AV1 support
+Encoded as **UI-010**. HLD-time research confirms whether "Test" or
+another verbiage matches Uptime Kuma's existing affordance pattern.
 
-Many newer IP cameras ship HEVC by default. FFmpeg builds usually include
-HEVC decode (LGPL); the bundled `@ffmpeg-installer/ffmpeg` does. `node-av`
-also includes it. Three things to decide:
+### Q12.g — Status-page thumbnails + last-5-DOWN-images — RESOLVED: yes (with contingency)
 
-1. Is HEVC support in scope from day one? *(I'd say yes — the cost is
-   zero for our pipeline; the cost is in not supporting common
-   cameras.)*
-2. AV1 streams are still rare in cameras (mostly seen in cloud
-   transcodes). I'd say yes too, for the same reason — comes for free.
-3. We should *not* claim support for proprietary codecs (e.g., legacy
-   Hikvision-only H.264+ extensions). FFmpeg handles them via standard
-   H.264 paths; if a vendor emits genuinely non-standard frames, the
-   monitor will report DOWN — accurately.
+- Last-match thumbnail on status pages: per-monitor opt-in, off by
+  default. Encoded as **UI-013**.
+- Last 5 DOWN-frame thumbnails for incident detail: stored in a small
+  bounded table with inline cleanup (no daemon). Encoded as **UI-014**.
+- **Contingency:** if HLD-time review concludes the bounded-table
+  pattern doesn't fit Uptime Kuma's existing patterns, the entire
+  feature (UI-013 + UI-014 + storage) is dropped per the owner's
+  fallback instruction. A TODO note is logged for the future
+  webhook-based alternative (UI-015).
 
-**PROPOSED:** HEVC and AV1 supported via the chosen decode stack; no
-explicit codec filter applied.
+### Q12.h — Future webhook outputs — RESOLVED: documented for later
+
+Encoded as **UI-015** (Won't this work). Two specific future-sprint
+items captured:
+
+1. Webhook on Full-mode distance climbing toward threshold (early
+   warning).
+2. Webhook POST of periodic UP frames + every DOWN frame to a
+   user-specified URL, eliminating the need to store images in Uptime
+   Kuma's database. Replaces UI-013 / UI-014 for users who'd rather
+   externalise image retention.
 
 ---
 
-## Q5. DECISION: behaviour when reference image is missing in Full mode
+## Open questions (round 2 — for the next adversarial pass)
 
-If a user picks Full mode but hasn't yet uploaded a reference (or the URL
-fetch failed), what does the monitor do?
+### Q13. CONFIRM: Uptime Kuma's "accordion" / collapsible section pattern
 
-Options:
-- **(a) Refuse to save.** UI validation fails until at least one
-  reference is provided.
-- **(b) Save but show monitor as DOWN** with `"Full mode: no reference
-  image configured"` until references are added.
-- **(c) Auto-capture a reference** from the live stream on first save.
+UI-012 (lazy-load reference BLOBs) and the references section
+generally need to know what visual affordance to use for grouped
+fields that aren't always expanded. At a quick scan, `EditMonitor.vue`
+uses Bootstrap `<div class="collapse">` blocks for advanced HTTP
+options (e.g., body / headers). HLD-time confirmation:
 
-Each has trade-offs. (a) is strictest; (b) makes the failure visible
-without preventing setup; (c) is slick but bakes "current scene" as the
-correct one even if the camera was misaimed at setup time.
+- Verify whether `EditMonitor.vue` has an established pattern for
+  "expand-on-click sections within a monitor's edit form."
+- Match it. If multiple patterns exist, prefer the most recent.
+- If no pattern exists, propose the closest Bootstrap-native
+  primitive that matches Uptime Kuma's broader style (likely
+  `<details>` or `<div class="card">` with a collapse toggle).
 
-**PROPOSED:** (a) for required references, with a separate "Capture from
-current stream" button (per **[05-image-comparison-strategy.md](./05-image-comparison-strategy.md)** §5)
-that lets the user explicitly opt in to (c). **DECISION REQUEST.**
+**DECISION REQUEST at HLD time, not now.**
 
----
+### Q14. CONFIRM: existing Test-button verbiage
 
-## Q6. PROPOSED: scope-split readiness for upstream
+UI-010 says "match Uptime Kuma's existing verbiage." HLD-time research
+should: (a) check if HTTP / Push / TCP monitors have a "test now" /
+"check now" / "probe" affordance, (b) match exactly. Default proposal
+is "Test" if no precedent exists.
 
-The brief is silent on whether you eventually want the work upstream.
-The repo is your fork. Two postures matter:
+### Q15. CONFIRM: Audit-log destination
 
-- **Fork-only.** All three modes ship together. Done. No CommanderStorm
-  to satisfy except indirectly (good code is good code).
-- **Upstream-bound.** CommanderStorm's "split keeps it maintainable"
-  guidance pushes Basic into a standalone first PR; Enhanced and Full
-  are follow-ups.
+OP-007 says "stored in a small audit table aligned with Uptime Kuma's
+existing audit/log patterns." HLD-time research should confirm whether
+Uptime Kuma has a generic audit subsystem. If not, two fallbacks:
+(a) a dedicated `monitor_reference_audit` table (preferred), (b)
+piggy-back on the existing `notification_log` or similar — only if it
+makes semantic sense.
 
-NFR-051 (scope-split readiness) keeps the option open: Basic is in its
-own file, with no compile-time or runtime dependency on Enhanced/Full.
-A Basic-only upstream PR is then a `git rm` of three Enhanced/Full files
-plus the migration columns they introduced.
+### Q16. CONFIRM: `node-av` API surface for credentials and authentication
 
-Cost of NFR-051: a tiny amount of architectural discipline; a slightly
-larger boundary between Basic and Enhanced/Full code paths than would
-otherwise exist.
+`node-av` exposes FFmpeg's AVDictionary at session-open time. Standard
+RTSP credentials are passed via URL (`rtsp://user:pass@host/path`) or
+via `rtsp_user` / `rtsp_pass` AVOptions. HLD-time work needs to:
 
-**DECISION REQUEST:** confirm whether you want NFR-051 enforced. If
-fork-only is the only goal, we can relax it.
+- Confirm `node-av` exposes these options.
+- Decide whether the form's username / password fields are merged
+  into the URL or passed separately. (Owner-stated preference: reuse
+  the generic `username` / `password` columns; if the URL also
+  contains credentials, the URL form wins, with a UI warning if both
+  are set.)
 
----
+### Q17. CONFIRM: serialisation of reference fingerprints to the frontend
 
-## Q7. PROPOSED: where do BLOB references actually live for SQLite?
+Fingerprints (16 bytes each, ~32 hex chars) are tiny and DO belong in
+the default monitor JSON — they let the UI show "currently configured"
+status. UI-012 only excludes the BLOB. To verify at HLD: ensure the
+hash columns serialise but the BLOB columns do not.
 
-Uptime Kuma supports SQLite (default) and MariaDB. SQLite stores BLOBs
-inline (no extra cost; though large BLOBs can cause page bloat). MariaDB
-stores them in `LONGBLOB` columns (efficient).
+### Q18. CONFIRM: how does Uptime Kuma handle "non-blocking warning beneath a field"
 
-The 80 KB target after re-resampling is well within both engines'
-comfort zones. The schema change is identical for both: a `blob` column
-type via Knex.
+UI-007 (rtsp_transport URL warning) and UI-011 (keyframe-interval
+warning) need a visual warning affordance that is non-blocking and
+below the field. HLD-time: identify whether `EditMonitor.vue` has a
+precedent (Bootstrap `alert-warning`? small chip? icon + tooltip?)
+and match it.
 
-What might bite us:
-- SQLite's `dump`/`restore` and Uptime Kuma's existing backup script
-  must round-trip BLOBs correctly. I have not verified this.
-- Frontend serialisation: Uptime Kuma serialises monitor objects over
-  WebSockets. We'd want to *omit* BLOB columns from default
-  serialisation to avoid blasting kilobytes of base64 on every push;
-  serve them on demand via a dedicated endpoint instead.
+### Q19. NEW: should the Test button be available before the monitor is saved?
 
-**PROPOSED:** add `excludedFromMonitorJSON: true` semantics for BLOB
-columns; the existing `Monitor.toJSON()` filter list is the place. A
-dedicated GET endpoint serves the BLOB on demand for the edit form.
+UI-010 says it's on the edit form. Two sub-questions:
+- (a) Is it available before the user has ever clicked Save? (i.e.,
+  does it operate on the form's current state, regardless of DB
+  persistence?)
+- (b) Does it count as a "real" check that produces a heartbeat, or is
+  it a side-channel probe whose result is shown only in the UI?
 
-**DECISION REQUEST:** confirm this is acceptable; raise concerns about
-SQLite/MariaDB backup compatibility if you have visibility I lack.
+**Proposal:** (a) yes (operate on form state); (b) side-channel only
+(no heartbeat written). This matches HTTP-keyword's existing "test"
+behaviour if such exists; HLD-time verification.
 
----
+### Q20. NEW: incident-detail UI to surface DOWN images (UI-014)
 
-## Q8. PROPOSED: minimum supported FFmpeg version
+If UI-014 is kept, the user-facing surface for the 5 DOWN images is
+either:
+- (a) The monitor's incident-detail page (existing in Uptime Kuma).
+- (b) The status page (status pages are public; this might be too
+  privacy-sensitive).
+- (c) Both, gated by separate toggles.
 
-If we go the subprocess route, the `-stimeout` / `-timeout` flag rename
-in FFmpeg 5.0 (April 2021) means we either:
-
-- (a) Detect version and pick the right flag.
-- (b) Set both flags (older versions fail on unknown new flags; newer
-  versions fail on removed old flags — so this *doesn't* actually work).
-- (c) Require FFmpeg ≥ 5.0 and document it.
-
-`@ffmpeg-installer/ffmpeg` ships FFmpeg 6.0+ in its current versions.
-The Debian-base Dockerfile would `apt-get install ffmpeg` from Debian
-stable (currently FFmpeg 5.1+).
-
-**PROPOSED:** require FFmpeg ≥ 5.0. Detected at startup; UI warning if
-older. Documented in the README section we'll add at HLD time.
-
-**DECISION REQUEST:** confirm or lower the floor. (Lowering is
-genuinely complicated; I'd argue we don't.)
-
----
-
-## Q9. PROPOSED: per-monitor concurrency cap default
-
-NFR-004 caps concurrently-active Enhanced/Full checks at 4 by default.
-The number is somewhat arbitrary. The reasoning:
-
-- Each FFmpeg subprocess is ~20 MB RSS plus ~10–30% of one CPU core
-  during decode.
-- A small VPS (1 CPU, 1–2 GB RAM) can comfortably handle 4 concurrent
-  decodes; 8 starts to thrash.
-- A big server can override via env var (e.g., `RTSP_CONCURRENCY=16`).
-
-**DECISION REQUEST:** confirm 4 as a reasonable default, or propose a
-different number. Maybe 2 if you target small NAS deployments;
-`Math.max(2, Math.min(4, os.cpus().length / 2))` if you want it scaled.
-
----
-
-## Q10. CLARIFICATION: meaning of "RTSP and RTMP over TCP and UDP" — once more, in writing
-
-Just to make sure my interpretation in FR-020 / FR-021 / FR-023 is what
-you meant. My read:
-
-- **RTSP over TCP** → RTSP control on TCP/554; media on TCP-interleaved
-  (in the same RTSP socket) — supported in all three modes.
-- **RTSP over UDP** → I am rendering this as "RTSP control on TCP/554
-  with media on UDP-RTP" — supported in all three modes. Pure
-  RTSP-control-over-UDP is excluded (FR-020 doesn't include the row;
-  see **[02-protocol-coverage.md](./02-protocol-coverage.md)** §3.1
-  for why).
-- **RTMP over TCP** → standard RTMP on TCP/1935 — supported.
-- **RTMP over UDP** → not a real thing; rejected as FR-026 / Q2 above.
-
-**DECISION REQUEST:** confirm this interpretation, or push back if you
-genuinely meant something else by "RTSP over UDP." If a specific vendor
-requires raw RTSP-control-over-UDP, share the vendor and I'll
-investigate.
-
----
-
-## Q11. SMALL ASKS (please confirm or override)
-
-- **Q11.a** — "Path" field placeholder text. Default proposal:
-  `"/Streaming/Channels/101"` for RTSP, `"/live/stream"` for RTMP, with
-  a tooltip noting "consult your camera's documentation."
-  **CONFIRM/OVERRIDE.**
-- **Q11.b** — Default thresholds: 10-second wall-clock budget, 5
-  frames for Enhanced, 24/128 distance threshold for Full.
-  **CONFIRM/OVERRIDE.**
-- **Q11.c** — Whether to support `?rtsp_transport=` URL parameter (some
-  camera apps emit this). Probably not; we expose a UI toggle instead.
-  **CONFIRM/OVERRIDE.**
-- **Q11.d** — Whether the "Capture from current stream" button (used to
-  populate references) should require Enhanced or Full mode capability,
-  or be a one-shot regardless of selected mode. **DECISION REQUEST.**
-
----
-
-## Q12. THINGS YOU DIDN'T ASK ABOUT BUT I THINK ARE WORTH RAISING
-
-In your spirit of "don't be shy to suggest things I've failed to
-consider" — these aren't requirements, but they are things you might
-want to weigh.
-
-- **Q12.a — Pre-roll / first-frame patience.** Some cameras take 2–4
-  seconds to send their first decoded keyframe (they have to wait for
-  the next IDR). If wall-clock budget is too tight, healthy cameras
-  fail. The 10 s default is comfortable but worth flagging. *Mitigation
-  in current design:* configurable timeout in NFR-002.
-
-- **Q12.b — H.264 keyframe-only vs all frames.** Enhanced mode could
-  speed up massively by only decoding keyframes (`-skip_frame nokey`),
-  at the cost of confused statistics. Full mode definitely wants
-  keyframe-only (one frame is enough). **PROPOSED:** Full uses
-  `-skip_frame nokey`, Enhanced uses default. **CONFIRM/OVERRIDE.**
-
-- **Q12.c — Multi-camera per-monitor.** Your bash script runs *two*
-  cameras per cron tick, each producing its own push update. The new
-  monitor maps **one camera per monitor row**, matching every existing
-  Uptime Kuma monitor type. This is more verbose to set up (one
-  monitor per camera) but composes correctly with status pages,
-  notifications, and tags. I'd not change it. *Confirming this is the
-  right call.*
-
-- **Q12.d — Push fallback.** Keep your existing push monitors as
-  fallbacks for the period before the new monitor is implemented;
-  remove them after the active monitor proves out. The new monitor
-  doesn't replace push monitors; it makes the script obsolete. Worth
-  noting in your migration notes when you eventually implement.
-
-- **Q12.e — Audit log of reference uploads.** Should we keep an audit
-  trail of when references were updated and from where (BLOB upload,
-  URL refresh, captured-from-stream)? It is one extra column and a
-  log line; cheap. **PROPOSED yes.**
-
-- **Q12.f — A "test now" button on the edit form.** Let the user run a
-  one-shot probe against the entered URL before saving. UI-affordance
-  precedent in HTTP monitors. Particularly useful here because the
-  failure modes are nuanced (vendor quirks, transport choice, codec
-  support). **PROPOSED yes.**
-
-- **Q12.g — Heartbeat enrichment for status pages.** The status-page
-  view of a Full-mode monitor could optionally show a tiny thumbnail
-  of the most recent matching frame, captioned with the distance.
-  Privacy-questionable for some users (camera footage on a status
-  page). **PROPOSED:** off by default; per-monitor opt-in only;
-  thumbnail re-resampled from BLOB-stored last-match frame.
-
-- **Q12.h — Webhook outputs for image-match changes.** When a Full-mode
-  monitor's distance climbs *toward* the threshold without crossing
-  it, that's a useful early warning ("camera is drifting"). **PROPOSED
-  defer:** capture data in heartbeats, but don't add new notification
-  channels in v1.
+**Proposal:** (a) only by default; opt-in to (b) via the same toggle
+as UI-013. Confirms at HLD.
 
 ---
 
 ## How to use this document for adversarial review
 
-For each numbered item, the expected outcome of your review is one of:
+Resolved items above should normally not be re-litigated unless new
+information has surfaced. Open items (Q13–Q20) should be answered
+either now or deferred to HLD time. Mark each:
 
-- **ACK** — proposed direction stands; lock into requirements.
+- **ACK** — proposed direction stands.
 - **OVERRIDE: <new direction>** — replace the proposal.
-- **DEFER** — keep on this list; don't commit yet.
-- **REJECT** — drop entirely; remove from scope.
-
-I'll fold the outcomes into a revised
-**[04-requirements.md](./04-requirements.md)** before HLD work begins.
+- **DEFER** — keep on the list; revisit at HLD time.
+- **REJECT** — drop entirely from scope.

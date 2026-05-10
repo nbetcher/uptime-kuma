@@ -46,33 +46,38 @@ These are deliberately excluded. Each is justified in the document linked.
 - **HLS, DASH, MPEG-TS-over-HTTP, WebRTC, ONVIF, MJPEG-over-HTTP.** Possible
   follow-up monitor types; not part of this work. See
   **[02-protocol-coverage.md](./02-protocol-coverage.md#out-of-scope)**.
-- **RTSP-over-DTLS.** The original brief asked for this to be planned; I am
-  pushing back because it is not a standardised or vendor-deployed
-  combination. See **[08-open-questions.md](./08-open-questions.md)** §1.
 - **RTMP-over-UDP.** Does not exist. The UDP cousin is RTMFP — a different
   protocol family, used almost exclusively by Adobe Flash legacy systems.
-  See **[08-open-questions.md](./08-open-questions.md)** §2.
 - **Per-frame motion detection, object detection, OCR, classifier ML.**
   These are camera-NVR features, not uptime-monitor features.
 
-## Project posture: fork-only vs. upstream-bound
+## Project posture: three-PR strategy
 
-This work is being authored on the `nbetcher/uptime-kuma` fork on a branch
-named `claude/rtsp-requirements-docs-8L95n`. Two distinct postures are
-possible, and the design accommodates both:
+This work is being authored on the `nbetcher/uptime-kuma` fork. The
+design is structured around three planned pull requests, agreed by the
+fork owner:
 
-- **Fork-only:** the work ships in this fork and is consumed by its owner.
-  No upstream concerns apply. Nothing here changes.
-- **Upstream-bound:** at some future date, a subset (likely Basic mode
-  alone, per `@CommanderStorm`'s repeated guidance — see
-  **[06-prior-art-review.md](./06-prior-art-review.md)**) is offered to
-  `louislam/uptime-kuma`. In that case, additional constraints from
-  `AGENTS.md` and `CONTRIBUTING.md` apply. The design is structured so
-  Basic mode is independently extractable.
+1. **PR 1 (fork-only).** All three modes ship to `nbetcher/uptime-kuma`
+   together, including Full mode (the fork-specific feature). This is
+   the canonical "fork build."
+2. **PR 2 (upstream).** Basic mode, extracted as a clean subset of PR 1
+   — separate file, separate migration column subset — proposed to
+   `louislam/uptime-kuma`. Satisfies `@CommanderStorm`'s "simple first"
+   guidance and resolves issue #2851.
+3. **PR 3 (upstream).** Enhanced mode, layered on top of the merged
+   Basic. Proposed to `louislam/uptime-kuma`; addresses
+   `@PoleTransformer`'s black-screen failure mode.
 
-Recommendation: design and document for fork-only delivery, but keep Basic
-mode's surface area small enough that it can be extracted into a clean,
-single-purpose upstream PR if you choose. **PROPOSED**.
+Full mode is *not* proposed upstream — it is fork-specific.
+
+The codebase is structured so PR 2 and PR 3 are mechanically extractable
+(NFR-051): Basic in its own file, no compile-time or runtime imports of
+Enhanced/Full code, separate migration column subset. Upstream branches
+are produced by targeted file removal + migration trim, not by
+re-authoring.
+
+Implementation branches will be created at implementation time (one per
+PR), not during planning.
 
 ## AGENTS.md implications
 
@@ -100,7 +105,7 @@ keep us inside the policy.
 | **RTSPS** | RTSP over TLS. Default TCP port 322. Encrypts the *control* channel only. |
 | **RTP** | Real-time Transport Protocol. Carries the actual media packets. Negotiated by RTSP `SETUP`; runs over UDP or TCP-interleaved. |
 | **RTCP** | RTP Control Protocol. Statistics/feedback alongside RTP. |
-| **SRTP / DTLS-SRTP** | Encrypted RTP. Keying via DTLS appears in WebRTC, **not** in RTSP. |
+| **SRTP** | Encrypted RTP. Rare in IP-camera deployments. |
 | **RTMP** | Real-Time Messaging Protocol. TCP-only; default port 1935. |
 | **RTMPS** | RTMP over TLS. No standardised port; commonly TCP 443 (live ingest) or 4935 (self-hosted). |
 | **RTMFP** | Real-Time Media Flow Protocol (RFC 7016). Adobe's UDP-based cousin of RTMP. **Not the same as "RTMP over UDP."** |
