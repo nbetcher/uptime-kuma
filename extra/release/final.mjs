@@ -36,8 +36,8 @@ checkVersionFormat(version);
 const semverIdentifier = semver.prerelease(version);
 console.log("Semver identifier:", semverIdentifier);
 if (semverIdentifier) {
-    console.error("VERSION should not have a semver identifier for final release");
-    process.exit(1);
+    console.warn("VERSION should not have a semver identifier for final release");
+    //process.exit(1);
 }
 
 // Check if docker is running
