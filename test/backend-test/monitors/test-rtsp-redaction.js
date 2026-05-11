@@ -19,7 +19,7 @@ describe("RTSP credential redaction (NFR-020)", () => {
         assert.doesNotMatch(ctx.url, /secretpass/);
     });
 
-    test("INVALID_URL error scrubs credentials from echoed input", async () => {
+    test("INVALID_URL error scrubs credentials from echoed input (user:pass)", async () => {
         try {
             await preflight({
                 url: "rtsp://alice:secretpass@bad url with spaces",
@@ -31,6 +31,20 @@ describe("RTSP credential redaction (NFR-020)", () => {
         } catch (err) {
             assert.doesNotMatch(err.message, /alice/);
             assert.doesNotMatch(err.message, /secretpass/);
+        }
+    });
+
+    test("INVALID_URL error scrubs user-only URLs (no password)", async () => {
+        try {
+            await preflight({
+                url: "rtsp://alice@bad url with spaces",
+                timeout: 10,
+                interval: 60,
+                getIgnoreTls: () => true,
+            });
+            assert.fail("should have thrown");
+        } catch (err) {
+            assert.doesNotMatch(err.message, /alice/);
         }
     });
 });

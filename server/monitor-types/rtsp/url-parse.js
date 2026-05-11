@@ -48,10 +48,13 @@ async function preflight(monitor) {
     try {
         url = new URL(monitor.url);
     } catch (e) {
-        // NFR-020: scrub any user:pass@ portion from the input before
-        // echoing it back in the error message — even though URL
-        // parse failed, the input bytes are still readable.
-        const scrubbed = String(monitor.url).replace(/(\b\w+):\/\/[^:/@\s]+:[^@/\s]+@/, "$1://***:***@");
+        // NFR-020: scrub any `user[:pass]@` portion from the input
+        // before echoing it back. Catches both `user:pass@host` and
+        // `user@host` shapes since either may carry sensitive data.
+        const scrubbed = String(monitor.url).replace(
+            /(\b\w+):\/\/[^@/\s]+@/,
+            "$1://***@"
+        );
         throw new Error(messages.INVALID_URL(`${e.message} (input: ${scrubbed.substring(0, 80)})`));
     }
 

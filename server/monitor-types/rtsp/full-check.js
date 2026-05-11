@@ -24,9 +24,17 @@ async function run(monitor, heartbeat, ctx) {
     const startMs = Date.now();
     let source = null;
     let jpeg;
+    let keyframeIntervalSec = null;
 
     try {
         source = await NodeAvFrameSource.open(ctx);
+
+        // UI-011: stash keyframe interval for the Test button warning.
+        try {
+            keyframeIntervalSec = await source.getKeyframeInterval();
+        } catch (e) {
+            log.debug("rtsp", `full: keyframe-interval probe failed: ${e.message}`);
+        }
         let frame = null;
         // Pull a small number of attempts so a single bad frame
         // doesn't fail the whole check; bail on the first valid
@@ -96,6 +104,9 @@ async function run(monitor, heartbeat, ctx) {
             : scoreDay;
 
     heartbeat.ping = Date.now() - startMs;
+    if (keyframeIntervalSec != null) {
+        heartbeat.keyframeIntervalSec = keyframeIntervalSec;
+    }
 
     if (best <= threshold) {
         heartbeat.status = UP;

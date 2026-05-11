@@ -144,6 +144,12 @@ class UptimeKumaServer {
 
         this.io = new Server(this.httpServer, {
             cors,
+            // Bump the per-message cap from socket.io's 1 MB default so
+            // the RTSP reference-upload path can ship a 10 MB binary
+            // (≈14 MB after base64 + JSON framing). All other handlers
+            // are tiny; raising the cap globally is the lowest-impact
+            // way to support the upload without chunking.
+            maxHttpBufferSize: 16 * 1024 * 1024,
             allowRequest: async (req, callback) => {
                 let transport;
                 // It should be always true, but just in case, because this property is not documented

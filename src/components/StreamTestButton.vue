@@ -19,12 +19,6 @@
             >
                 {{ keyframeWarning(result.warningKeyframeInterval) }}
             </div>
-
-            <ul v-if="result.warnings && result.warnings.length" class="list-unstyled">
-                <li v-for="(w, i) in result.warnings" :key="i" class="alert alert-warning py-1 px-2 mb-1">
-                    {{ w }}
-                </li>
-            </ul>
         </div>
     </div>
 </template>

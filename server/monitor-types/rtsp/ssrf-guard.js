@@ -96,7 +96,15 @@ function ipv6Bucket(ip) {
  */
 function classifyIp(ip) {
     if (!ip) return null;
-    if (ip.includes(":")) return ipv6Bucket(ip);
+    if (ip.includes(":")) {
+        // IPv4-mapped IPv6 (::ffff:1.2.3.4) must be reclassified as
+        // IPv4 — otherwise an attacker could route a request to e.g.
+        // ::ffff:127.0.0.1 and bypass the loopback check.
+        const lower = ip.toLowerCase();
+        const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+        if (mapped) return ipv4Bucket(mapped[1]);
+        return ipv6Bucket(ip);
+    }
     return ipv4Bucket(ip);
 }
 
@@ -178,7 +186,11 @@ async function fetchUrl(urlStr, opts = {}) {
                 headers: {
                     Host: url.hostname,
                     "User-Agent": "UptimeKuma-RTSP-Ref/1.0",
-                    Accept: "image/*",
+                    // Constrain the Accept header to the same shapes
+                    // the response-side allowlist enforces; this
+                    // signals intent and reduces wasted round-trips
+                    // for SVG-only origins.
+                    Accept: ALLOWED_CONTENT_TYPES.join(", "),
                 },
                 servername: url.hostname,
                 timeout: FETCH_TIMEOUT_MS,

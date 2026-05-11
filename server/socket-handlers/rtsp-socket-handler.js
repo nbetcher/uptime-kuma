@@ -18,7 +18,12 @@ async function loadMonitorOrThrow(socket, monitorId) {
     if (!bean) {
         throw new Error("Monitor not found");
     }
-    if (bean.user_id !== socket.userID) {
+    // Defensive number-coerce: the redbean driver returns user_id as a
+    // number for SQLite/MariaDB integer columns, but a future change
+    // to how socket.userID is stored (e.g. session restoration) could
+    // surface it as a string. `==` would have worked but eslint flags
+    // it; explicit `Number(...)` is clearer.
+    if (Number(bean.user_id) !== Number(socket.userID)) {
         throw new Error("Permission denied");
     }
     if (bean.type !== "rtsp") {
@@ -203,7 +208,6 @@ module.exports.rtspSocketHandler = function (socket) {
             const heartbeat = { msg: "", status: 0 };
             const { RtspMonitorType } = require("../monitor-types/rtsp");
             const type = new RtspMonitorType();
-            const warnings = [];
             let warningKeyframeInterval = null;
 
             try {
@@ -213,16 +217,15 @@ module.exports.rtspSocketHandler = function (socket) {
                     ok: false,
                     mode: stub.stream_mode,
                     msg: err.message,
-                    warnings,
                 });
                 return;
             }
 
-            // The Enhanced/Full check has already opened+closed a
-            // node-av session — re-opening one here to measure the
-            // keyframe interval would double-count the bucket and
-            // round-trip the camera again. Surface as a structured
-            // hint rather than re-probing.
+            // UI-011: surface a localised warning when the keyframe
+            // cadence is too sparse for the configured interval. The
+            // check function (enhanced-check.js / full-check.js)
+            // populates heartbeat.keyframeIntervalSec on the same
+            // session it already opened — no second round-trip.
             if (stub.stream_mode === "enhanced" || stub.stream_mode === "full") {
                 if (heartbeat.keyframeIntervalSec != null) {
                     const halfInterval = (stub.interval || 60) / 2;
@@ -240,7 +243,6 @@ module.exports.rtspSocketHandler = function (socket) {
                 mode: stub.stream_mode,
                 msg: heartbeat.msg,
                 ping: heartbeat.ping,
-                warnings,
                 warningKeyframeInterval,
             });
         } catch (e) {

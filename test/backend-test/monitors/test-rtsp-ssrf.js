@@ -80,4 +80,13 @@ describe("classifyIp dispatcher", () => {
         assert.strictEqual(classifyIp(null), null);
         assert.strictEqual(classifyIp(""), null);
     });
+
+    test("reclassifies IPv4-mapped IPv6 as the underlying IPv4 bucket", () => {
+        // ::ffff:127.0.0.1 → loopback, NOT public
+        assert.strictEqual(classifyIp("::ffff:127.0.0.1"), "loopback");
+        assert.strictEqual(classifyIp("::ffff:10.0.0.1"), "rfc1918-10");
+        assert.strictEqual(classifyIp("::ffff:192.168.1.1"), "rfc1918-192");
+        // Public IPv4-mapped is still null (public)
+        assert.strictEqual(classifyIp("::ffff:8.8.8.8"), null);
+    });
 });

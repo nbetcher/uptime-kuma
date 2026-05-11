@@ -38,9 +38,17 @@ async function run(monitor, heartbeat, ctx) {
     const buffers = [];
     const hashes = [];
     let source = null;
+    let keyframeIntervalSec = null;
 
     try {
         source = await NodeAvFrameSource.open(ctx);
+
+        // UI-011: stash keyframe interval for the Test button warning.
+        try {
+            keyframeIntervalSec = await source.getKeyframeInterval();
+        } catch (e) {
+            log.debug("rtsp", `enhanced: keyframe-interval probe failed: ${e.message}`);
+        }
 
         while (buffers.length < wanted) {
             // MR13 / OP-003: enforce the wall-clock budget as a hard
@@ -104,6 +112,11 @@ async function run(monitor, heartbeat, ctx) {
     heartbeat.status = UP;
     heartbeat.ping = Date.now() - startMs;
     heartbeat.msg = messages.ENHANCED_OK(buffers.length, heartbeat.ping);
+    // Surface for the Test button warning surface (UI-011) — the
+    // socket handler reads this off the heartbeat object.
+    if (keyframeIntervalSec != null) {
+        heartbeat.keyframeIntervalSec = keyframeIntervalSec;
+    }
 
     if (monitor.getSaveResponse && monitor.getSaveResponse() && monitor.saveResponseData) {
         try {
