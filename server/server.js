@@ -354,6 +354,10 @@ let needSetup = false;
     const apiRouter = require("./routers/api-router");
     app.use(apiRouter);
 
+    // RTSP/RTMP stream monitor REST endpoints (references, test-stream)
+    const rtspRouter = require("./routers/rtsp-router");
+    app.use(rtspRouter);
+
     // Status Page Router
     const statusPageRouter = require("./routers/status-page-router");
     app.use(statusPageRouter);
@@ -730,6 +734,14 @@ let needSetup = false;
                 let notificationIDList = monitor.notificationIDList;
                 delete monitor.notificationIDList;
 
+                // Stream-monitor (RTSP/RTMP) validation — runs before
+                // bean.import so a Full-mode save without references
+                // is rejected cleanly.
+                if (monitor.type === "rtsp") {
+                    const { validateStreamMonitor } = require("./monitor-types/rtsp/validation");
+                    validateStreamMonitor(monitor, null);
+                }
+
                 // Ensure status code ranges are strings
                 if (!monitor.accepted_statuscodes.every((code) => typeof code === "string")) {
                     throw new Error("Accepted status codes are not all strings");
@@ -936,6 +948,34 @@ let needSetup = false;
                 bean.ping_numeric = monitor.ping_numeric;
                 bean.ping_count = monitor.ping_count;
                 bean.ping_per_request_timeout = monitor.ping_per_request_timeout;
+
+                // Stream-monitor (RTSP/RTMP) configuration. BLOB
+                // reference columns are managed by their REST
+                // endpoint, not by editMonitor; only configuration is
+                // accepted here.
+                bean.stream_protocol = monitor.streamProtocol || null;
+                bean.stream_transport = monitor.streamTransport || null;
+                bean.stream_mode = monitor.streamMode || null;
+                bean.stream_frame_count = monitor.streamFrameCount ?? null;
+                bean.stream_wall_clock_budget_sec = monitor.streamWallClockBudgetSec ?? null;
+                bean.stream_match_threshold = monitor.streamMatchThreshold ?? null;
+                bean.stream_separate_day_night =
+                    monitor.streamSeparateDayNight === null || monitor.streamSeparateDayNight === undefined
+                        ? null
+                        : Boolean(monitor.streamSeparateDayNight);
+                bean.stream_status_thumbnail =
+                    monitor.streamStatusThumbnail === null || monitor.streamStatusThumbnail === undefined
+                        ? null
+                        : Boolean(monitor.streamStatusThumbnail);
+                bean.stream_keep_down_images =
+                    monitor.streamKeepDownImages === null || monitor.streamKeepDownImages === undefined
+                        ? null
+                        : Boolean(monitor.streamKeepDownImages);
+
+                if (monitor.type === "rtsp") {
+                    const { validateStreamMonitor } = require("./monitor-types/rtsp/validation");
+                    validateStreamMonitor(monitor, bean);
+                }
 
                 bean.validate();
 

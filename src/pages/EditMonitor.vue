@@ -93,6 +93,10 @@
                                         <option value="websocket-upgrade">Websocket Upgrade</option>
                                     </optgroup>
 
+                                    <optgroup :label="$t('monitorTypeStreaming')">
+                                        <option value="rtsp">{{ $t("RTSP / RTMP Stream") }}</option>
+                                    </optgroup>
+
                                     <!-- Should sort from A to Z in this category -->
                                     <optgroup :label="$t('monitorTypeDatabase')">
                                         <option value="sqlserver">Microsoft SQL Server</option>
@@ -1113,6 +1117,151 @@
                                         required
                                     />
                                 </div>
+                            </template>
+
+                            <template v-if="monitor.type === 'rtsp'">
+                                <div class="my-3">
+                                    <label for="rtsp-url" class="form-label">{{ $t("RTSP URL") }}</label>
+                                    <input
+                                        id="rtsp-url"
+                                        v-model="monitor.url"
+                                        type="text"
+                                        class="form-control"
+                                        required
+                                        placeholder="rtsp://camera.local:554/stream1"
+                                    />
+                                    <div class="form-text">{{ $t("RTSP URL Description") }}</div>
+                                </div>
+
+                                <div class="my-3">
+                                    <label for="rtsp-protocol" class="form-label">{{ $t("RTSP Protocol") }}</label>
+                                    <select id="rtsp-protocol" v-model="monitor.streamProtocol" class="form-select">
+                                        <option value="rtsp">RTSP</option>
+                                        <option value="rtsps">RTSPS</option>
+                                        <option value="rtmp">RTMP</option>
+                                        <option value="rtmps">RTMPS</option>
+                                    </select>
+                                </div>
+
+                                <div class="my-3">
+                                    <label class="form-label">{{ $t("RTSP Mode") }}</label>
+                                    <div class="btn-group d-block" role="group">
+                                        <input id="rtsp-mode-basic" v-model="monitor.streamMode" class="btn-check" type="radio" value="basic" />
+                                        <label class="btn btn-outline-primary" for="rtsp-mode-basic">{{ $t("RTSP Mode Basic") }}</label>
+                                        <input id="rtsp-mode-enhanced" v-model="monitor.streamMode" class="btn-check" type="radio" value="enhanced" />
+                                        <label class="btn btn-outline-primary" for="rtsp-mode-enhanced">{{ $t("RTSP Mode Enhanced") }}</label>
+                                        <input id="rtsp-mode-full" v-model="monitor.streamMode" class="btn-check" type="radio" value="full" />
+                                        <label class="btn btn-outline-primary" for="rtsp-mode-full">{{ $t("RTSP Mode Full") }}</label>
+                                    </div>
+                                    <div class="form-text">{{ $t("RTSP Mode Description") }}</div>
+                                </div>
+
+                                <div
+                                    v-if="(monitor.streamMode === 'enhanced' || monitor.streamMode === 'full') && (monitor.streamProtocol === 'rtsp' || monitor.streamProtocol === 'rtsps')"
+                                    class="my-3"
+                                >
+                                    <label for="rtsp-transport" class="form-label">{{ $t("RTSP Transport") }}</label>
+                                    <select id="rtsp-transport" v-model="monitor.streamTransport" class="form-select">
+                                        <option value="tcp">{{ $t("RTSP Transport TCP") }}</option>
+                                        <option value="udp">{{ $t("RTSP Transport UDP") }}</option>
+                                    </select>
+                                    <div class="form-text">{{ $t("RTSP Transport UDP Tooltip") }}</div>
+                                </div>
+
+                                <div
+                                    v-if="rtspUrlContainsTransportParam"
+                                    class="alert alert-warning my-3"
+                                    role="alert"
+                                >
+                                    {{ $t("RTSP URL Transport Param Warning") }}
+                                </div>
+
+                                <div v-if="monitor.streamMode === 'enhanced'" class="my-3">
+                                    <label for="rtsp-frame-count" class="form-label">{{ $t("RTSP Frame Count") }}</label>
+                                    <input
+                                        id="rtsp-frame-count"
+                                        v-model.number="monitor.streamFrameCount"
+                                        type="number"
+                                        class="form-control"
+                                        min="2"
+                                        max="15"
+                                        placeholder="5"
+                                    />
+                                </div>
+
+                                <div v-if="monitor.streamMode === 'enhanced' || monitor.streamMode === 'full'" class="my-3">
+                                    <label for="rtsp-budget" class="form-label">{{ $t("RTSP Wall Clock Budget") }}</label>
+                                    <input
+                                        id="rtsp-budget"
+                                        v-model.number="monitor.streamWallClockBudgetSec"
+                                        type="number"
+                                        class="form-control"
+                                        min="5"
+                                        max="300"
+                                        :placeholder="defaultRtspBudget"
+                                    />
+                                </div>
+
+                                <div v-if="monitor.streamMode === 'full'" class="my-3">
+                                    <label for="rtsp-threshold" class="form-label">{{ $t("RTSP Reference Match Threshold") }}</label>
+                                    <input
+                                        id="rtsp-threshold"
+                                        v-model.number="monitor.streamMatchThreshold"
+                                        type="number"
+                                        class="form-control"
+                                        min="0"
+                                        max="128"
+                                        placeholder="24"
+                                    />
+                                    <div class="form-text">{{ $t("RTSP Reference Threshold Description") }}</div>
+                                </div>
+
+                                <div v-if="monitor.streamMode === 'full'" class="my-3 form-check">
+                                    <input
+                                        id="rtsp-separate-dn"
+                                        v-model="monitor.streamSeparateDayNight"
+                                        class="form-check-input"
+                                        type="checkbox"
+                                    />
+                                    <label class="form-check-label" for="rtsp-separate-dn">{{ $t("RTSP Separate Day Night") }}</label>
+                                </div>
+
+                                <!-- Reference image panel surfaces lazy-loaded BLOB via REST -->
+                                <ReferenceImagePanel
+                                    v-if="monitor.streamMode === 'full' && monitor.id"
+                                    :monitor-id="monitor.id"
+                                    :separate-day-night="monitor.streamSeparateDayNight !== false"
+                                    :day-has-blob="!!monitor.streamReferenceDayHasBlob"
+                                    :night-has-blob="!!monitor.streamReferenceNightHasBlob"
+                                    :day-url="monitor.streamReferenceDayUrl"
+                                    :night-url="monitor.streamReferenceNightUrl"
+                                    @uploaded="onRtspReferenceUploaded"
+                                />
+                                <div v-else-if="monitor.streamMode === 'full'" class="alert alert-info my-3" role="alert">
+                                    {{ $t("RTSP Save Before Reference Upload") }}
+                                </div>
+
+                                <div v-if="monitor.streamMode === 'full'" class="my-3 form-check">
+                                    <input
+                                        id="rtsp-status-thumb"
+                                        v-model="monitor.streamStatusThumbnail"
+                                        class="form-check-input"
+                                        type="checkbox"
+                                    />
+                                    <label class="form-check-label" for="rtsp-status-thumb">{{ $t("RTSP Status Thumbnail Opt In") }}</label>
+                                </div>
+
+                                <div v-if="monitor.streamMode === 'full'" class="my-3 form-check">
+                                    <input
+                                        id="rtsp-keep-down"
+                                        v-model="monitor.streamKeepDownImages"
+                                        class="form-check-input"
+                                        type="checkbox"
+                                    />
+                                    <label class="form-check-label" for="rtsp-keep-down">{{ $t("RTSP Keep Down Images Opt In") }}</label>
+                                </div>
+
+                                <StreamTestButton :monitor="monitor" />
                             </template>
 
                             <template v-if="monitor.type === 'radius'">
@@ -3054,6 +3203,8 @@ import isFQDN from "validator/lib/isFQDN";
 import isIP from "validator/lib/isIP";
 import HiddenInput from "../components/HiddenInput.vue";
 import EditMonitorConditions from "../components/EditMonitorConditions.vue";
+import ReferenceImagePanel from "../components/ReferenceImagePanel.vue";
+import StreamTestButton from "../components/StreamTestButton.vue";
 
 const toast = useToast();
 
@@ -3067,6 +3218,18 @@ const defaultValueList = {
     "websocket-upgrade": {
         url: "wss://",
         accepted_statuscodes: ["1000"],
+    },
+    rtsp: {
+        url: "rtsp://",
+        accepted_statuscodes: ["200-299"],
+        streamProtocol: "rtsp",
+        streamTransport: "tcp",
+        streamMode: "basic",
+        streamFrameCount: 5,
+        streamMatchThreshold: 24,
+        streamSeparateDayNight: true,
+        streamStatusThumbnail: false,
+        streamKeepDownImages: false,
     },
 };
 
@@ -3143,6 +3306,8 @@ export default {
         TagsManager,
         VueMultiselect,
         EditMonitorConditions,
+        ReferenceImagePanel,
+        StreamTestButton,
     },
 
     data() {
@@ -3181,6 +3346,31 @@ export default {
     },
 
     computed: {
+        /**
+         * UI-007: true if the user-entered URL contains a
+         * `?rtsp_transport=` query parameter — the dedicated
+         * Transport selector is canonical, so we warn that the URL
+         * parameter will be ignored.
+         */
+        rtspUrlContainsTransportParam() {
+            if (!this.monitor.url) return false;
+            try {
+                const u = new URL(this.monitor.url);
+                return u.searchParams.has("rtsp_transport");
+            } catch {
+                return false;
+            }
+        },
+
+        /**
+         * Default Enhanced/Full wall-clock budget derived from the
+         * monitor's interval — placeholder for the override field.
+         */
+        defaultRtspBudget() {
+            const i = parseInt(this.monitor.interval, 10) || 60;
+            return Math.max(5, Math.min(30, Math.floor(i / 3)));
+        },
+
         timeoutStep() {
             return this.monitor.type === "ping" ? 1 : 0.1;
         },
@@ -3575,6 +3765,19 @@ message HealthCheckResponse {
                 }
             }
 
+            // Apply RTSP defaults when switching to the stream monitor type.
+            if (newType === "rtsp") {
+                if (!this.monitor.url || this.monitor.url === defaultValueList.http.url || this.monitor.url === defaultValueList["websocket-upgrade"].url) {
+                    this.monitor.url = defaultValueList.rtsp.url;
+                }
+                for (const [k, v] of Object.entries(defaultValueList.rtsp)) {
+                    if (k === "url" || k === "accepted_statuscodes") continue;
+                    if (this.monitor[k] === undefined || this.monitor[k] === null) {
+                        this.monitor[k] = v;
+                    }
+                }
+            }
+
             // Set default port for DNS if not already defined
             if (!this.monitor.port || this.monitor.port === "53" || this.monitor.port === "1812") {
                 if (this.monitor.type === "dns") {
@@ -3757,6 +3960,23 @@ message HealthCheckResponse {
         this.kafkaSaslMechanismOptions = kafkaSaslMechanismOptions;
     },
     methods: {
+        /**
+         * Refresh the local reference flags after the
+         * ReferenceImagePanel child reports a successful upload.
+         * @param {{slot: string, hasBlob: boolean, url?: string}} info Upload result
+         * @returns {void}
+         */
+        onRtspReferenceUploaded(info) {
+            if (!info || !info.slot) return;
+            if (info.slot === "day" || info.slot === "single") {
+                this.monitor.streamReferenceDayHasBlob = !!info.hasBlob;
+                if ("url" in info) this.monitor.streamReferenceDayUrl = info.url || null;
+            } else if (info.slot === "night") {
+                this.monitor.streamReferenceNightHasBlob = !!info.hasBlob;
+                if ("url" in info) this.monitor.streamReferenceNightUrl = info.url || null;
+            }
+        },
+
         /**
          * Initialize the edit monitor form
          * @returns {void}

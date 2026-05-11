@@ -213,6 +213,35 @@ class Monitor extends BeanModel {
             saveResponse: this.getSaveResponse(),
             saveErrorResponse: this.getSaveErrorResponse(),
             responseMaxLength: this.response_max_length ?? RESPONSE_BODY_LENGTH_DEFAULT,
+
+            // Stream-monitor (RTSP / RTMP) configuration. BLOB
+            // reference columns are intentionally excluded — fetched
+            // lazily via REST per HLDS UI-012.
+            streamProtocol: this.stream_protocol,
+            streamTransport: this.stream_transport,
+            streamMode: this.stream_mode,
+            streamFrameCount: this.stream_frame_count,
+            streamWallClockBudgetSec: this.stream_wall_clock_budget_sec,
+            streamMatchThreshold: this.stream_match_threshold,
+            streamSeparateDayNight: this.stream_separate_day_night === null || this.stream_separate_day_night === undefined
+                ? null
+                : Boolean(this.stream_separate_day_night),
+            streamStatusThumbnail: this.stream_status_thumbnail === null || this.stream_status_thumbnail === undefined
+                ? null
+                : Boolean(this.stream_status_thumbnail),
+            streamKeepDownImages: this.stream_keep_down_images === null || this.stream_keep_down_images === undefined
+                ? null
+                : Boolean(this.stream_keep_down_images),
+            streamReferenceDayUrl: this.stream_reference_day_url,
+            streamReferenceNightUrl: this.stream_reference_night_url,
+            streamReferenceDayHash: this.stream_reference_day_hash
+                ? Buffer.from(this.stream_reference_day_hash).toString("hex")
+                : null,
+            streamReferenceNightHash: this.stream_reference_night_hash
+                ? Buffer.from(this.stream_reference_night_hash).toString("hex")
+                : null,
+            streamReferenceDayHasBlob: Boolean(this.stream_reference_day_blob),
+            streamReferenceNightHasBlob: Boolean(this.stream_reference_night_blob),
         };
 
         if (includeSensitiveData) {
