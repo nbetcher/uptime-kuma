@@ -210,11 +210,13 @@ RTSP credentials are passed via URL (`rtsp://user:pass@host/path`) or
 via `rtsp_user` / `rtsp_pass` AVOptions. HLD-time work needs to:
 
 - Confirm `node-av` exposes these options.
-- Decide whether the form's username / password fields are merged
-  into the URL or passed separately. (Owner-stated preference: reuse
-  the generic `username` / `password` columns; if the URL also
-  contains credentials, the URL form wins, with a UI warning if both
-  are set.)
+- Credential precedence is resolved as follows: the generic `username`
+  and `password` columns on the monitor row are canonical. If the user
+  ALSO embeds credentials in the RTSP URL (`rtsp://user:pass@host`), a
+  non-blocking warning is shown in the UI and the form fields win —
+  the URL credentials are stripped before passing the URL to `node-av`.
+  This is encoded in FR-030 and in the preflight step in
+  **[03-monitoring-modes.md](./03-monitoring-modes.md)** §2.
 
 ### Q17. CONFIRM: serialisation of reference fingerprints to the frontend
 
@@ -255,6 +257,28 @@ either:
 
 **Proposal:** (a) only by default; opt-in to (b) via the same toggle
 as UI-013. Confirms at HLD.
+
+### Q21. NEW: License compliance review for FFmpeg bundling
+
+`node-av` bundles FFmpeg. The `node-av` wrapper itself is MIT, but
+FFmpeg may include LGPL-2.1+ or GPL-2+ components depending on how
+the prebuilds were compiled. Before any upstream PR:
+
+- **Action at implementation time:** inspect the `node-av` prebuild's
+  FFmpeg `configure` output (or check the `node-av` build scripts in
+  the repo) to confirm which codecs and libraries are enabled and their
+  licenses.
+- **Acceptable:** LGPL-only FFmpeg build. No code changes to
+  Uptime Kuma's source are required for LGPL compliance when
+  dynamically linked (which the N-API binding effectively achieves).
+- **Requires review:** if any GPL-licensed component is present, the
+  distributed binary may need to be GPL-licensed or a rebuild without
+  the GPL component must be used.
+- `sharp`/libvips is Apache-2.0 with LGPL native libraries — confirm
+  the same at implementation time and add a `NOTICE` or `LICENSES`
+  entry in the fork.
+
+**DECISION REQUEST at implementation time.**
 
 ---
 

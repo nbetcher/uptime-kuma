@@ -184,7 +184,8 @@ you use pixelmatch like #6325 does?"
 
 `node-av` (`seydx/node-av`) provides N-API bindings to FFmpeg with
 prebuilt binaries for Linux/macOS/Windows × x64/arm64. MIT-licensed
-wrapper; FFmpeg itself is LGPL/GPL and bundled.
+wrapper; FFmpeg itself is **LGPL-licensed** and bundled (see license
+note below).
 
 Why this is the right choice:
 
@@ -204,8 +205,35 @@ Costs accepted:
 
 - ~30–50 MB install footprint (prebuilds include FFmpeg).
 - Native binding — npm fallback to source-build on platforms without
-  prebuilds (rare given Uptime Kuma's Docker matrix).
+  prebuilds.
 - Younger than canonical `ffmpeg`; smaller user base.
+- **arm/v7 and musl gap:** `node-av` does NOT currently ship prebuilds
+  for `linux/arm/v7` (armv7l) or musl (Alpine). Uptime Kuma's official
+  Docker images include a `linux/arm/v7` build target. On these
+  platforms Enhanced and Full modes will degrade gracefully per UI-005;
+  Basic mode is unaffected because it does not use `node-av`. This is
+  tracked as an open compatibility item and may resolve as `node-av`
+  matures.
+- **Transitive dependencies:** `node-av` pulls in `unzipper` and
+  `werift` as runtime dependencies (used for prebuilt binary
+  downloading and WebRTC utilities respectively). `sharp`/libvips
+  similarly has optional native platform packages. NFR-034's "exactly
+  two" constraint refers to the two **direct** entries in
+  `package.json`, not the full transitive closure.
+
+### License compliance
+
+`node-av` is MIT-licensed as a wrapper, but the bundled FFmpeg
+libraries may include components under LGPL-2.1+ or GPL-2+ depending
+on build configuration. Before shipping this dependency upstream,
+the implementation phase MUST verify the `node-av` prebuild's FFmpeg
+configure flags to confirm it is LGPL-only (no GPL-licensed codecs
+or filters enabled). If any GPL components are present, the
+distribution license of the final binary must be reviewed against
+Uptime Kuma's MIT license before upstream merge. `sharp`/libvips is
+Apache-2.0 with LGPL native libraries — similarly acceptable for
+binary distribution, but worth documenting in a `LICENSES` or
+`NOTICE` file.
 
 The fork owner has confirmed this direction. The implementation
 factors the decode-source behind a small interface so a
