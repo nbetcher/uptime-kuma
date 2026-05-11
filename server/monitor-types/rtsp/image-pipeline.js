@@ -230,11 +230,14 @@ async function canonicalize(inputBuf, opts = {}) {
     const maxDim = parseInt(process.env.RTSP_REFERENCE_MAX_DIM, 10) || opts.maxDim || 640;
     const quality = parseInt(process.env.RTSP_REFERENCE_QUALITY, 10) || opts.quality || 85;
 
+    // sharp strips metadata by default; calling .withMetadata()
+    // would *add* it back. The mozjpeg re-encode below sanitises
+    // any malformed JFIF chunks an attacker may have crafted
+    // (NFR-023).
     return sharp(inputBuf)
         .rotate() // honour EXIF orientation before stripping
         .resize(maxDim, maxDim, { fit: "inside", withoutEnlargement: true })
         .jpeg({ quality, mozjpeg: true })
-        .withMetadata(false)
         .toBuffer();
 }
 
@@ -246,10 +249,10 @@ async function canonicalize(inputBuf, opts = {}) {
  */
 async function thumbnailize(jpegBuf) {
     const maxDim = parseInt(process.env.RTSP_DOWN_IMAGE_MAX_DIM, 10) || 320;
+    // sharp strips metadata by default; .withMetadata() would add it back.
     return sharp(jpegBuf)
         .resize(maxDim, maxDim, { fit: "inside", withoutEnlargement: true })
         .jpeg({ quality: 70 })
-        .withMetadata(false)
         .toBuffer();
 }
 

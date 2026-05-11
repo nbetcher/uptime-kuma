@@ -28,13 +28,15 @@ async function run(monitor, heartbeat, ctx) {
     try {
         source = await NodeAvFrameSource.open(ctx);
         let frame = null;
-        const deadline = startMs + ctx.budgetMs;
-        // Pull a small number of attempts so a single bad frame doesn't
-        // fail the whole check; bail on the first valid JPEG.
+        // Pull a small number of attempts so a single bad frame
+        // doesn't fail the whole check; bail on the first valid
+        // JPEG. Each attempt is bounded by the remaining wall-clock
+        // budget (MR13 / OP-003).
         for (let attempts = 0; attempts < 5; attempts++) {
-            if (Date.now() > deadline) break;
+            const remaining = ctx.budgetMs - (Date.now() - startMs);
+            if (remaining <= 0) break;
             try {
-                frame = await source.next();
+                frame = await source.next(remaining);
             } catch (e) {
                 throw new Error(messages.DECODE_FAILED(e.message || String(e)));
             }

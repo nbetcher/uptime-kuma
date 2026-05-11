@@ -40,6 +40,13 @@ function columnsForSlot(slot) {
  */
 async function processRaw(rawBytes) {
     const blob = await canonicalize(rawBytes);
+    // HLDS §3.3: canonicalised BLOBs are capped at 256 KB. mozjpeg
+    // re-encode at quality 85 at 640px should land well under, but
+    // a pathological input (e.g. dense noise) could exceed — reject
+    // rather than store an oversize row.
+    if (blob.length > 256 * 1024) {
+        throw new Error(`reference exceeds 256 KB after canonicalize (got ${blob.length})`);
+    }
     const sharpModule = require("sharp");
     const meta = await sharpModule(blob).metadata();
     const fp = await fingerprint(blob);
@@ -256,24 +263,41 @@ async function persistFrameImage(args) {
         return;
     }
     const limit = kind === "match" ? 1 : 5;
+    // Wrap INSERT + bounded-cleanup DELETE in a single
+    // transaction so the table never transiently exceeds `limit`
+    // rows for a given (monitor, kind) — OP-008. The cleanup
+    // subquery uses a portable "id NOT IN (most-recent-N)" form
+    // that works on both SQLite and MariaDB (LIMIT/OFFSET inside
+    // IN subqueries needs the wrapping table on MySQL/MariaDB).
+    let trx;
     try {
-        await R.exec(
+        trx = await R.begin();
+        await trx.exec(
             "INSERT INTO monitor_stream_down_image (monitor_id, kind, image_blob, captured_at) VALUES (?, ?, ?, ?)",
             [monitorId, kind, thumb, new Date().toISOString()]
         );
-        // Bounded cleanup: keep the most recent N rows for this
-        // (monitor, kind).
-        await R.exec(
+        await trx.exec(
             `DELETE FROM monitor_stream_down_image
-             WHERE id IN (
-                 SELECT id FROM monitor_stream_down_image
-                 WHERE monitor_id = ? AND kind = ?
-                 ORDER BY captured_at DESC
-                 LIMIT -1 OFFSET ?
-             )`,
-            [monitorId, kind, limit]
+             WHERE monitor_id = ? AND kind = ?
+               AND id NOT IN (
+                 SELECT id FROM (
+                   SELECT id FROM monitor_stream_down_image
+                   WHERE monitor_id = ? AND kind = ?
+                   ORDER BY captured_at DESC
+                   LIMIT ?
+                 ) AS keep
+               )`,
+            [monitorId, kind, monitorId, kind, limit]
         );
+        await trx.commit();
     } catch (e) {
+        if (trx) {
+            try {
+                await trx.rollback();
+            } catch {
+                /* ignored */
+            }
+        }
         log.warn("rtsp", `persistFrameImage failed: ${e.message}`);
     }
 }

@@ -42,10 +42,14 @@ async function run(monitor, heartbeat, ctx) {
     try {
         source = await NodeAvFrameSource.open(ctx);
 
-        while (buffers.length < wanted && Date.now() - startMs < ctx.budgetMs) {
+        while (buffers.length < wanted) {
+            // MR13 / OP-003: enforce the wall-clock budget as a hard
+            // stop per frame, not just between frames.
+            const remaining = ctx.budgetMs - (Date.now() - startMs);
+            if (remaining <= 0) break;
             let frame;
             try {
-                frame = await source.next();
+                frame = await source.next(remaining);
             } catch (e) {
                 if (buffers.length === 0) throw e;
                 log.debug("rtsp", `enhanced: read error after ${buffers.length} frames: ${e.message}`);

@@ -5,6 +5,10 @@ const { log } = require("../../../src/util");
 
 const DEFAULT_MAX_BYTES = parseInt(process.env.RTSP_FETCH_MAX_BYTES, 10) || 10 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 15000;
+// SVG is XML and can carry scripts / external entity references; we
+// re-decode through sharp before storing, but defence-in-depth says
+// reject SVG outright. Allow common binary raster formats only.
+const ALLOWED_CONTENT_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
 
 /**
  * Convert a dotted-quad IPv4 string to a uint32 in network byte order.
@@ -161,10 +165,14 @@ async function fetchUrl(urlStr, opts = {}) {
     return new Promise((resolve, reject) => {
         const lib = url.protocol === "https:" ? https : http;
         const port = url.port || (url.protocol === "https:" ? 443 : 80);
+        // IPv6 literals must be bracketed in the `host` field;
+        // `servername` stays as the bare hostname for SNI/cert
+        // validation.
+        const hostForConnect = ip.includes(":") ? `[${ip}]` : ip;
 
         const req = lib.request(
             {
-                host: ip,
+                host: hostForConnect,
                 port,
                 path: url.pathname + url.search,
                 headers: {
@@ -187,10 +195,14 @@ async function fetchUrl(urlStr, opts = {}) {
                     reject(new Error(`reference URL returned HTTP ${res.statusCode}`));
                     return;
                 }
-                const ctype = (res.headers["content-type"] || "").toLowerCase();
-                if (!ctype.startsWith("image/")) {
+                const ctype = (res.headers["content-type"] || "").toLowerCase().split(";")[0].trim();
+                if (!ALLOWED_CONTENT_TYPES.includes(ctype)) {
                     res.resume();
-                    reject(new Error(`reference URL content-type is ${ctype || "(absent)"}, not image/*`));
+                    reject(
+                        new Error(
+                            `reference URL content-type is ${ctype || "(absent)"}, must be one of ${ALLOWED_CONTENT_TYPES.join(", ")}`
+                        )
+                    );
                     return;
                 }
 
@@ -227,6 +239,7 @@ async function fetchUrl(urlStr, opts = {}) {
 module.exports = {
     DEFAULT_MAX_BYTES,
     FETCH_TIMEOUT_MS,
+    ALLOWED_CONTENT_TYPES,
     ipv4ToInt,
     ipv4Bucket,
     ipv6Bucket,

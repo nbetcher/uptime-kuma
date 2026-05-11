@@ -39,6 +39,11 @@ class TokenBucket {
      * Attempt to acquire a token. If the bucket is at capacity, wait
      * up to `timeoutMs` for a slot. On timeout, reject with
      * `SkipCheckError`.
+     *
+     * The `settled` flag prevents the timer and `release()` paths
+     * from both firing — without it, a near-simultaneous timeout +
+     * release would double-decrement `active`.
+     *
      * @param {number} timeoutMs Maximum wait
      * @returns {Promise<void>}
      */
@@ -48,13 +53,17 @@ class TokenBucket {
             return;
         }
         return new Promise((resolve, reject) => {
-            const entry = {};
+            const entry = { settled: false };
             entry.timer = setTimeout(() => {
+                if (entry.settled) return;
+                entry.settled = true;
                 const idx = this.queue.indexOf(entry);
                 if (idx >= 0) this.queue.splice(idx, 1);
                 reject(new SkipCheckError("concurrency limit timeout"));
             }, timeoutMs);
             entry.resolve = () => {
+                if (entry.settled) return;
+                entry.settled = true;
                 clearTimeout(entry.timer);
                 this.active++;
                 resolve();

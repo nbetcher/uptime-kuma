@@ -191,6 +191,7 @@ const { resetChrome } = require("./monitor-types/real-browser-monitor-type");
 const { EmbeddedMariaDB } = require("./embedded-mariadb");
 const { SetupDatabase } = require("./setup-database");
 const { chartSocketHandler } = require("./socket-handlers/chart-socket-handler");
+const { rtspSocketHandler } = require("./socket-handlers/rtsp-socket-handler");
 
 app.use(express.json());
 
@@ -353,10 +354,6 @@ let needSetup = false;
     // API Router
     const apiRouter = require("./routers/api-router");
     app.use(apiRouter);
-
-    // RTSP/RTMP stream monitor REST endpoints (references, test-stream)
-    const rtspRouter = require("./routers/rtsp-router");
-    app.use(rtspRouter);
 
     // Status Page Router
     const statusPageRouter = require("./routers/status-page-router");
@@ -778,6 +775,15 @@ let needSetup = false;
                 }
                 bean.user_id = socket.userID;
 
+                // Apply stream-monitor (RTSP/RTMP) fields with the
+                // boolean-coercion + null-defaulting rules that
+                // editMonitor also uses, so add/edit produce
+                // identical DB state.
+                if (monitor.type === "rtsp") {
+                    const { applyStreamFieldsToBean } = require("./monitor-types/rtsp/validation");
+                    applyStreamFieldsToBean(bean, monitor);
+                }
+
                 bean.validate();
 
                 await R.store(bean);
@@ -950,30 +956,14 @@ let needSetup = false;
                 bean.ping_per_request_timeout = monitor.ping_per_request_timeout;
 
                 // Stream-monitor (RTSP/RTMP) configuration. BLOB
-                // reference columns are managed by their REST
-                // endpoint, not by editMonitor; only configuration is
-                // accepted here.
-                bean.stream_protocol = monitor.streamProtocol || null;
-                bean.stream_transport = monitor.streamTransport || null;
-                bean.stream_mode = monitor.streamMode || null;
-                bean.stream_frame_count = monitor.streamFrameCount ?? null;
-                bean.stream_wall_clock_budget_sec = monitor.streamWallClockBudgetSec ?? null;
-                bean.stream_match_threshold = monitor.streamMatchThreshold ?? null;
-                bean.stream_separate_day_night =
-                    monitor.streamSeparateDayNight === null || monitor.streamSeparateDayNight === undefined
-                        ? null
-                        : Boolean(monitor.streamSeparateDayNight);
-                bean.stream_status_thumbnail =
-                    monitor.streamStatusThumbnail === null || monitor.streamStatusThumbnail === undefined
-                        ? null
-                        : Boolean(monitor.streamStatusThumbnail);
-                bean.stream_keep_down_images =
-                    monitor.streamKeepDownImages === null || monitor.streamKeepDownImages === undefined
-                        ? null
-                        : Boolean(monitor.streamKeepDownImages);
-
+                // reference columns are managed by the dedicated
+                // socket handlers, not by editMonitor.
                 if (monitor.type === "rtsp") {
-                    const { validateStreamMonitor } = require("./monitor-types/rtsp/validation");
+                    const {
+                        applyStreamFieldsToBean,
+                        validateStreamMonitor,
+                    } = require("./monitor-types/rtsp/validation");
+                    applyStreamFieldsToBean(bean, monitor);
                     validateStreamMonitor(monitor, bean);
                 }
 
@@ -1756,6 +1746,7 @@ let needSetup = false;
         remoteBrowserSocketHandler(socket);
         generalSocketHandler(socket, server);
         chartSocketHandler(socket);
+        rtspSocketHandler(socket);
 
         log.debug("server", "added all socket handlers");
 

@@ -1197,7 +1197,7 @@
                                         type="number"
                                         class="form-control"
                                         min="5"
-                                        max="300"
+                                        max="30"
                                         :placeholder="defaultRtspBudget"
                                     />
                                 </div>

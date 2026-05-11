@@ -20,7 +20,11 @@ const DEFAULT_PORTS = {
 function computeBudget(monitor) {
     const overrideSec = parseInt(monitor.stream_wall_clock_budget_sec, 10);
     if (Number.isFinite(overrideSec) && overrideSec > 0) {
-        return overrideSec * 1000;
+        // Clamp overrides to the same 5..30s envelope NFR-002
+        // defines — without this, a user-supplied override defeats
+        // the budget and can starve the global decode bucket.
+        const clamped = Math.max(5, Math.min(30, overrideSec));
+        return clamped * 1000;
     }
     const intervalSec = parseInt(monitor.interval, 10) || 60;
     const clamped = Math.max(5, Math.min(30, Math.floor(intervalSec / 3)));
@@ -44,7 +48,11 @@ async function preflight(monitor) {
     try {
         url = new URL(monitor.url);
     } catch (e) {
-        throw new Error(messages.INVALID_URL(e.message));
+        // NFR-020: scrub any user:pass@ portion from the input before
+        // echoing it back in the error message — even though URL
+        // parse failed, the input bytes are still readable.
+        const scrubbed = String(monitor.url).replace(/(\b\w+):\/\/[^:/@\s]+:[^@/\s]+@/, "$1://***:***@");
+        throw new Error(messages.INVALID_URL(`${e.message} (input: ${scrubbed.substring(0, 80)})`));
     }
 
     const proto = url.protocol.replace(":", "").toLowerCase();

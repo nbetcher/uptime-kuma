@@ -1577,6 +1577,5 @@
     "RTSP Reference Refreshing": "Refreshing…",
     "RTSP Reference Failed": "Reference operation failed",
     "RTSP Reference URL Prompt": "Enter the URL of the reference image (http/https):",
-    "RTSP Save Before Reference Upload": "Save the monitor first; reference images are managed after the monitor exists.",
-    "Test": "Test"
+    "RTSP Save Before Reference Upload": "Save the monitor first; reference images are managed after the monitor exists."
 }

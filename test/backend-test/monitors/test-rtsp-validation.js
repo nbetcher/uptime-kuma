@@ -49,7 +49,7 @@ describe("validateStreamMonitor", () => {
         );
     });
 
-    test("FR-019b: Full mode rejected without Day reference", () => {
+    test("FR-019b: Full mode rejected without Day reference at edit time", () => {
         assert.throws(
             () =>
                 validateStreamMonitor(
@@ -59,9 +59,23 @@ describe("validateStreamMonitor", () => {
                         streamMode: "full",
                         streamSeparateDayNight: true,
                     },
-                    null
+                    {} // bean exists, but no reference blobs
                 ),
             /Day reference/
+        );
+    });
+
+    test("FR-019b: Full mode permitted on add (bean=null) so user can upload refs after save", () => {
+        // No throw expected — references can only be uploaded after
+        // the monitor row exists. Runtime emits MISSING_REFERENCE.
+        validateStreamMonitor(
+            {
+                type: "rtsp",
+                url: "rtsp://x/s",
+                streamMode: "full",
+                streamSeparateDayNight: true,
+            },
+            null
         );
     });
 
@@ -74,7 +88,6 @@ describe("validateStreamMonitor", () => {
                         url: "rtsp://x/s",
                         streamMode: "full",
                         streamSeparateDayNight: true,
-                        streamReferenceDayHasBlob: true,
                     },
                     { stream_reference_day_blob: Buffer.from([1]) }
                 ),
@@ -138,6 +151,23 @@ describe("validateStreamMonitor", () => {
         );
     });
 
+    test("FR-026: rejects RTMP+UDP combination", () => {
+        assert.throws(
+            () =>
+                validateStreamMonitor(
+                    {
+                        type: "rtsp",
+                        url: "rtmp://x/s",
+                        streamMode: "basic",
+                        streamProtocol: "rtmp",
+                        streamTransport: "udp",
+                    },
+                    null
+                ),
+            /RTMP is TCP-only/
+        );
+    });
+
     test("rejects streamMatchThreshold out of range", () => {
         assert.throws(
             () =>
@@ -166,6 +196,22 @@ describe("validateStreamMonitor", () => {
                     { stream_reference_day_blob: Buffer.from([1]) }
                 ),
             /streamMatchThreshold/
+        );
+    });
+
+    test("rejects streamWallClockBudgetSec above 30 (NFR-002 envelope)", () => {
+        assert.throws(
+            () =>
+                validateStreamMonitor(
+                    {
+                        type: "rtsp",
+                        url: "rtsp://x/s",
+                        streamMode: "enhanced",
+                        streamWallClockBudgetSec: 60,
+                    },
+                    null
+                ),
+            /streamWallClockBudgetSec/
         );
     });
 });

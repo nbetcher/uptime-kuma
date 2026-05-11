@@ -40,10 +40,17 @@ exports.messages = {
     // === Full ===
     MATCH_OK: (which, dist) => `matched ${which} at distance ${dist}/128`,
     MATCH_FAIL: (day, night, thr) => {
-        if (night === null || night === undefined) {
-            return `scene mismatch: distance ${day}/128 > threshold ${thr}/128`;
+        // Symmetric handling: either score may be null when the
+        // corresponding reference slot is unset (single-ref mode or
+        // partial config).
+        const dayPresent = day !== null && day !== undefined;
+        const nightPresent = night !== null && night !== undefined;
+        if (dayPresent && nightPresent) {
+            return `scene mismatch: distance ${Math.min(day, night)}/128 > threshold ${thr}/128 (Day=${day}, Night=${night})`;
         }
-        return `scene mismatch: distance ${Math.min(day, night)}/128 > threshold ${thr}/128 (Day=${day}, Night=${night})`;
+        if (dayPresent) return `scene mismatch: distance ${day}/128 > threshold ${thr}/128`;
+        if (nightPresent) return `scene mismatch: distance ${night}/128 > threshold ${thr}/128`;
+        return `scene mismatch: no scores computed`;
     },
     NO_FRAME: () => "no frames received within wall-clock budget",
     MISSING_REFERENCE: () => "Full mode requires at least one reference image",

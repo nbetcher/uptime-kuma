@@ -7,7 +7,8 @@
                 <h5 class="card-title">{{ slot.label }}</h5>
 
                 <div v-if="slot.hasBlob" class="mb-2">
-                    <img :src="thumbUrl(slot.key)" alt="reference thumbnail" class="ref-thumb" />
+                    <img v-if="thumbCache[slot.key]" :src="thumbCache[slot.key]" alt="reference thumbnail" class="ref-thumb" />
+                    <span v-else>{{ $t("Loading") }}…</span>
                 </div>
                 <div v-else class="text-muted mb-2">{{ $t("RTSP Reference Empty") }}</div>
 
@@ -15,7 +16,7 @@
                     {{ $t("RTSP Reference URL Label") }}: <code>{{ slot.url }}</code>
                 </div>
 
-                <div class="d-flex gap-2 align-items-center">
+                <div class="d-flex gap-2 align-items-center flex-wrap">
                     <label :for="`upload-${slot.key}`" class="btn btn-outline-primary mb-0">
                         {{ $t("RTSP Upload File") }}
                         <input
@@ -26,27 +27,13 @@
                             @change="onFileSelected($event, slot.key)"
                         />
                     </label>
-                    <button
-                        type="button"
-                        class="btn btn-outline-primary"
-                        @click="onSetUrl(slot.key)"
-                    >
+                    <button type="button" class="btn btn-outline-primary" @click="onSetUrl(slot.key)">
                         {{ $t("RTSP Upload URL") }}
                     </button>
-                    <button
-                        v-if="slot.url"
-                        type="button"
-                        class="btn btn-outline-secondary"
-                        @click="onRefresh(slot.key)"
-                    >
+                    <button v-if="slot.url" type="button" class="btn btn-outline-secondary" @click="onRefresh(slot.key)">
                         {{ $t("RTSP Refresh URL") }}
                     </button>
-                    <button
-                        v-if="slot.hasBlob"
-                        type="button"
-                        class="btn btn-outline-danger"
-                        @click="onDelete(slot.key)"
-                    >
+                    <button v-if="slot.hasBlob" type="button" class="btn btn-outline-danger" @click="onDelete(slot.key)">
                         {{ $t("Delete") }}
                     </button>
                 </div>
@@ -58,17 +45,15 @@
 </template>
 
 <script>
-import axios from "axios";
-
 const READ_LIMIT_BYTES = 10 * 1024 * 1024;
 
 /**
  * ReferenceImagePanel
  *
  * Per HLDS §7.2: surfaces the Day / Night (or single) reference
- * slots, lets the user upload bytes or supply a URL, and lazily
- * fetches the canonical thumbnail via GET. BLOBs are never embedded
- * in the WebSocket-serialised monitor payload (UI-012).
+ * slots and lets the user upload bytes or supply a URL. All wire
+ * traffic flows over the authenticated socket.io connection — see
+ * `server/socket-handlers/rtsp-socket-handler.js`.
  *
  * Emits `uploaded(info)` after a successful upload / URL fetch /
  * refresh so the parent form can update its hasBlob flags.
@@ -94,7 +79,7 @@ export default {
                 night: { hasBlob: this.nightHasBlob, url: this.nightUrl, status: "" },
                 single: { hasBlob: this.dayHasBlob, url: this.dayUrl, status: "" },
             },
-            thumbBust: Date.now(),
+            thumbCache: {},
         };
     },
 
@@ -134,22 +119,32 @@ export default {
         dayHasBlob(v) {
             this.slotState.day.hasBlob = v;
             this.slotState.single.hasBlob = v;
+            if (v) this.loadThumb("day");
         },
         nightHasBlob(v) {
             this.slotState.night.hasBlob = v;
-        },
-        dayUrl(v) {
-            this.slotState.day.url = v;
-            this.slotState.single.url = v;
-        },
-        nightUrl(v) {
-            this.slotState.night.url = v;
+            if (v) this.loadThumb("night");
         },
     },
 
+    mounted() {
+        if (this.dayHasBlob) this.loadThumb(this.separateDayNight ? "day" : "single");
+        if (this.nightHasBlob && this.separateDayNight) this.loadThumb("night");
+    },
+
     methods: {
-        thumbUrl(slot) {
-            return `/api/monitor/${this.monitorId}/reference/${slot}?b=${this.thumbBust}`;
+        socket() {
+            return this.$root.socket;
+        },
+
+        async loadThumb(slot) {
+            const socket = this.socket();
+            if (!socket || !socket.connected) return;
+            const realSlot = slot === "single" ? "day" : slot;
+            socket.emit("rtsp:getReference", this.monitorId, realSlot, (res) => {
+                if (!res || !res.ok) return;
+                this.thumbCache[slot] = `data:${res.contentType};base64,${res.dataBase64}`;
+            });
         },
 
         async onFileSelected(evt, slot) {
@@ -164,77 +159,68 @@ export default {
             try {
                 const buf = await file.arrayBuffer();
                 const b64 = arrayBufferToBase64(buf);
-                const result = await axios.post(
-                    `/api/monitor/${this.monitorId}/reference/${slot}`,
-                    { data: b64 }
-                );
-                this.applyResult(slot, result.data);
+                this.callSocket("rtsp:uploadReference", [this.monitorId, slot === "single" ? "day" : slot, { data: b64 }], slot);
             } catch (err) {
-                this.slotState[slot].status = errorMsg(err);
+                this.slotState[slot].status = err.message || String(err);
             }
         },
 
-        async onSetUrl(slot) {
+        onSetUrl(slot) {
             // eslint-disable-next-line no-alert
             const url = window.prompt(this.$t("RTSP Reference URL Prompt"), this.slotState[slot].url || "https://");
             if (!url) return;
             this.slotState[slot].status = this.$t("RTSP Reference Fetching URL");
-            try {
-                const result = await axios.post(
-                    `/api/monitor/${this.monitorId}/reference/${slot}`,
-                    { url }
-                );
-                this.applyResult(slot, result.data);
-            } catch (err) {
-                this.slotState[slot].status = errorMsg(err);
-            }
+            this.callSocket("rtsp:uploadReference", [this.monitorId, slot === "single" ? "day" : slot, { url }], slot);
         },
 
-        async onRefresh(slot) {
+        onRefresh(slot) {
             this.slotState[slot].status = this.$t("RTSP Reference Refreshing");
-            try {
-                const result = await axios.post(
-                    `/api/monitor/${this.monitorId}/reference/${slot}/refresh`,
-                    {}
-                );
-                this.applyResult(slot, result.data);
-            } catch (err) {
-                this.slotState[slot].status = errorMsg(err);
-            }
+            this.callSocket("rtsp:refreshReference", [this.monitorId, slot === "single" ? "day" : slot], slot);
         },
 
-        async onDelete(slot) {
+        onDelete(slot) {
             // eslint-disable-next-line no-alert
             if (!window.confirm(this.$t("Confirm"))) return;
             this.slotState[slot].status = "";
-            try {
-                await axios.delete(`/api/monitor/${this.monitorId}/reference/${slot}`);
+            const realSlot = slot === "single" ? "day" : slot;
+            const socket = this.socket();
+            if (!socket) return;
+            socket.emit("rtsp:deleteReference", this.monitorId, realSlot, (res) => {
+                if (!res || !res.ok) {
+                    this.slotState[slot].status = (res && res.msg) || this.$t("RTSP Reference Failed");
+                    return;
+                }
                 this.slotState[slot].hasBlob = false;
                 this.slotState[slot].url = null;
-                this.thumbBust = Date.now();
+                delete this.thumbCache[slot];
                 this.$emit("uploaded", { slot, hasBlob: false, url: null });
-            } catch (err) {
-                this.slotState[slot].status = errorMsg(err);
-            }
+            });
         },
 
-        applyResult(slot, data) {
-            if (!data || data.ok === false) {
-                this.slotState[slot].status = data && data.msg ? data.msg : this.$t("RTSP Reference Failed");
+        callSocket(event, args, slot) {
+            const socket = this.socket();
+            if (!socket) {
+                this.slotState[slot].status = this.$t("RTSP Reference Failed");
                 return;
             }
-            this.slotState[slot].hasBlob = true;
-            if ("url" in data) this.slotState[slot].url = data.url;
-            this.slotState[slot].status = `${data.width || "?"}×${data.height || "?"} — ${Math.round((data.byteSize || 0) / 1024)} KB`;
-            this.thumbBust = Date.now();
-            this.$emit("uploaded", { slot, hasBlob: true, url: data.url || null });
+            socket.emit(event, ...args, (res) => {
+                if (!res || !res.ok) {
+                    this.slotState[slot].status = (res && res.msg) || this.$t("RTSP Reference Failed");
+                    return;
+                }
+                this.slotState[slot].hasBlob = true;
+                if ("url" in res) this.slotState[slot].url = res.url;
+                this.slotState[slot].status = `${res.width || "?"}×${res.height || "?"} — ${Math.round((res.byteSize || 0) / 1024)} KB`;
+                this.loadThumb(slot);
+                this.$emit("uploaded", { slot, hasBlob: true, url: res.url || null });
+            });
         },
     },
 };
 
 /**
- * Encode an ArrayBuffer to base64 without blowing the stack for
- * multi-MB inputs (chunk through a fixed window).
+ * Encode an ArrayBuffer to base64 without blowing the stack on
+ * multi-MB inputs (chunks through a fixed window).
  * @param {ArrayBuffer} buf Source bytes
  * @returns {string} base64-encoded string
  */
@@ -247,18 +233,6 @@ function arrayBufferToBase64(buf) {
         str += String.fromCharCode.apply(null, slice);
     }
     return btoa(str);
-}
-
-/**
- * Pull a human-readable error message from an axios error.
- * @param {Error|object} err Error
- * @returns {string} Message
- */
-function errorMsg(err) {
-    if (err && err.response && err.response.data && err.response.data.msg) {
-        return err.response.data.msg;
-    }
-    return (err && err.message) || String(err);
 }
 </script>
 

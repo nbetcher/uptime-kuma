@@ -15,10 +15,17 @@ const VALID_MODES = ["basic", "enhanced", "full"];
  * Validate the stream-monitor-specific fields of a monitor payload
  * coming from the frontend.
  *
+ * For a freshly-added monitor (`bean === null`) we cannot enforce
+ * FR-019b's "Full mode requires references at save time" — references
+ * can only be uploaded *after* the monitor row exists (they're keyed
+ * by `monitor_id`). Instead, the runtime check throws
+ * `MISSING_REFERENCE` until the user uploads references, which surfaces
+ * as a DOWN heartbeat (matches NFR-010's "every plausible failure mode
+ * is reported as a DOWN heartbeat"). FR-019b is enforced on
+ * `editMonitor` where `bean` is populated.
+ *
  * @param {object} monitor Incoming monitor JSON
- * @param {object} bean DB bean (used to read existing reference state
- *     for edit-time validation — references are uploaded separately
- *     and may already be present on the bean)
+ * @param {object} bean DB bean (null on add, populated on edit)
  * @returns {void}
  */
 function validateStreamMonitor(monitor, bean) {
@@ -34,6 +41,16 @@ function validateStreamMonitor(monitor, bean) {
 
     if (monitor.streamTransport && !VALID_TRANSPORTS.includes(monitor.streamTransport)) {
         throw new Error(`Invalid streamTransport: ${monitor.streamTransport}`);
+    }
+
+    // FR-026: RTMP is TCP-only by specification. Reject a
+    // (protocol=rtmp/rtmps + transport=udp) combination explicitly
+    // rather than silently ignore the transport at runtime.
+    if (
+        monitor.streamTransport === "udp" &&
+        (monitor.streamProtocol === "rtmp" || monitor.streamProtocol === "rtmps")
+    ) {
+        throw new Error("RTMP is TCP-only; UDP transport is not supported (FR-026)");
     }
 
     const mode = monitor.streamMode || "basic";
@@ -57,19 +74,19 @@ function validateStreamMonitor(monitor, bean) {
 
     if (monitor.streamWallClockBudgetSec !== undefined && monitor.streamWallClockBudgetSec !== null) {
         const b = parseInt(monitor.streamWallClockBudgetSec, 10);
-        if (!Number.isFinite(b) || b < 5 || b > 300) {
-            throw new Error("streamWallClockBudgetSec must be between 5 and 300");
+        if (!Number.isFinite(b) || b < 5 || b > 30) {
+            throw new Error("streamWallClockBudgetSec must be between 5 and 30");
         }
     }
 
     // FR-019b: Full mode requires at least one reference image.
-    if (mode === "full") {
-        const dayBlob =
-            (bean && bean.stream_reference_day_blob) ||
-            monitor.streamReferenceDayHasBlob;
-        const nightBlob =
-            (bean && bean.stream_reference_night_blob) ||
-            monitor.streamReferenceNightHasBlob;
+    // Enforced only when we have a saved monitor row to inspect.
+    // For new monitors (bean=null), Full mode is permitted; the
+    // runtime check throws MISSING_REFERENCE until references are
+    // uploaded, which surfaces as a clear DOWN heartbeat.
+    if (mode === "full" && bean) {
+        const dayBlob = bean.stream_reference_day_blob;
+        const nightBlob = bean.stream_reference_night_blob;
         const separate = monitor.streamSeparateDayNight !== false;
 
         if (separate) {
@@ -88,9 +105,44 @@ function validateStreamMonitor(monitor, bean) {
     }
 }
 
+/**
+ * Persist the stream-monitor configuration fields onto a DB bean.
+ * Used by both the `add` and `editMonitor` socket handlers so the
+ * mapping rules (boolean coercion, ?? null) stay in one place.
+ *
+ * Reference BLOB columns are managed by the reference-upload socket
+ * handler, NOT by this helper — leaving them out of the form-save
+ * path prevents accidental clobber on edit.
+ *
+ * @param {object} bean Monitor bean to mutate
+ * @param {object} monitor Form payload
+ * @returns {void}
+ */
+function applyStreamFieldsToBean(bean, monitor) {
+    bean.stream_protocol = monitor.streamProtocol || null;
+    bean.stream_transport = monitor.streamTransport || null;
+    bean.stream_mode = monitor.streamMode || null;
+    bean.stream_frame_count = monitor.streamFrameCount ?? null;
+    bean.stream_wall_clock_budget_sec = monitor.streamWallClockBudgetSec ?? null;
+    bean.stream_match_threshold = monitor.streamMatchThreshold ?? null;
+    bean.stream_separate_day_night =
+        monitor.streamSeparateDayNight === null || monitor.streamSeparateDayNight === undefined
+            ? null
+            : Boolean(monitor.streamSeparateDayNight);
+    bean.stream_status_thumbnail =
+        monitor.streamStatusThumbnail === null || monitor.streamStatusThumbnail === undefined
+            ? null
+            : Boolean(monitor.streamStatusThumbnail);
+    bean.stream_keep_down_images =
+        monitor.streamKeepDownImages === null || monitor.streamKeepDownImages === undefined
+            ? null
+            : Boolean(monitor.streamKeepDownImages);
+}
+
 module.exports = {
     VALID_PROTOCOLS,
     VALID_TRANSPORTS,
     VALID_MODES,
     validateStreamMonitor,
+    applyStreamFieldsToBean,
 };
