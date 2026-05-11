@@ -159,6 +159,25 @@ class NodeAvFrameSource {
      */
     async next(remainingMs) {
         if (this._closed) return null;
+        // On timeout, signal the underlying iterator/demuxer to
+        // unwind so its pending I/O is released promptly rather than
+        // dangling until the caller's `finally` close() — limits the
+        // brief unbounded-hold window OP-003 calls out.
+        const abort = () => {
+            try {
+                if (this._frameIterator && typeof this._frameIterator.return === "function") {
+                    this._frameIterator.return();
+                }
+                if (this.decoder && typeof this.decoder.cancel === "function") {
+                    this.decoder.cancel();
+                }
+                if (this.demuxer && typeof this.demuxer.cancel === "function") {
+                    this.demuxer.cancel();
+                }
+            } catch {
+                /* abort hooks are best-effort */
+            }
+        };
         try {
             // If we have a Decoder, use its async iterator (the
             // documented `node-av` pattern).
@@ -171,7 +190,7 @@ class NodeAvFrameSource {
                 }
                 const p = this._frameIterator.next();
                 const wrapped = remainingMs && remainingMs > 0
-                    ? withDeadline(p, remainingMs)
+                    ? withDeadline(p, remainingMs, abort)
                     : p;
                 const result = await wrapped;
                 if (!result || result.done) return null;
@@ -188,7 +207,7 @@ class NodeAvFrameSource {
             }
             const p = fn.call(session);
             const wrapped = remainingMs && remainingMs > 0
-                ? withDeadline(p, remainingMs)
+                ? withDeadline(p, remainingMs, abort)
                 : p;
             return await wrapped;
         } catch (e) {

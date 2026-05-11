@@ -36,7 +36,15 @@
                                 />
                             </span>
                             <div class="flex-fill text-truncate" style="min-width: 0">
-                                <div class="text-truncate">{{ monitor.name }}</div>
+                                <div class="text-truncate">
+                                    {{ monitor.name }}
+                                    <font-awesome-icon
+                                        v-if="monitor.type === 'rtsp' && monitor.ignoreTls && (monitor.streamProtocol === 'rtsps' || monitor.streamProtocol === 'rtmps')"
+                                        icon="exclamation-triangle"
+                                        class="ms-1 text-warning"
+                                        :title="$t('RTSP TLS Disabled Warning')"
+                                    />
+                                </div>
                                 <div v-if="monitor.tags.length > 0" class="tags gap-1">
                                     <Tag v-for="tag in monitor.tags" :key="tag" :item="tag" :size="'sm'" />
                                 </div>

@@ -180,6 +180,33 @@ module.exports.rtspSocketHandler = function (socket) {
         }
     });
 
+    socket.on("rtsp:listDownImages", async (monitorId, callback) => {
+        try {
+            checkLogin(socket);
+            const bean = await loadMonitorOrThrow(socket, parseInt(monitorId, 10));
+            // UI-014: return the most recent (up to 5) DOWN-frame
+            // thumbnails for the incident-detail page. The list is
+            // empty if streamKeepDownImages is off — the row never
+            // gets inserted in the first place.
+            const rows = await R.getAll(
+                "SELECT id, captured_at, image_blob FROM monitor_stream_down_image " +
+                    "WHERE monitor_id = ? AND kind = 'down' ORDER BY captured_at DESC LIMIT 5",
+                [bean.id]
+            );
+            const images = rows.map((r) => ({
+                id: r.id,
+                capturedAt: r.captured_at,
+                dataBase64: Buffer.isBuffer(r.image_blob)
+                    ? r.image_blob.toString("base64")
+                    : Buffer.from(r.image_blob).toString("base64"),
+            }));
+            callback({ ok: true, images });
+        } catch (e) {
+            log.error("rtsp", `listDownImages: ${e.message}`);
+            callback({ ok: false, msg: e.message });
+        }
+    });
+
     socket.on("rtsp:deleteReference", async (monitorId, slot, callback) => {
         try {
             checkLogin(socket);

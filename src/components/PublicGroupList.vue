@@ -113,6 +113,15 @@
                                                         data-testid="monitor-tag"
                                                     />
                                                 </div>
+                                                <!-- UI-013: last-match thumbnail for opted-in RTSP monitors -->
+                                                <div v-if="monitor.element.streamStatusThumbnail" class="rtsp-thumbnail mt-2">
+                                                    <img
+                                                        :src="`/api/monitor/${monitor.element.id}/match-thumbnail`"
+                                                        alt=""
+                                                        loading="lazy"
+                                                        @error="$event.target.style.display = 'none'"
+                                                    />
+                                                </div>
                                             </div>
                                         </div>
                                         <div :key="$root.userHeartbeatBar" class="col-3 col-xl-6">
@@ -327,7 +336,15 @@ export default {
 
 .extra-info {
     display: flex;
+    flex-wrap: wrap;
     margin-bottom: 0.5rem;
+}
+
+.rtsp-thumbnail img {
+    max-width: 160px;
+    max-height: 120px;
+    border-radius: 4px;
+    display: block;
 }
 
 .extra-info > div > div:first-child {

@@ -104,6 +104,14 @@ class Monitor extends BeanModel {
             obj.validCert = validCert;
         }
 
+        // UI-013: expose whether this RTSP monitor has opted in to
+        // showing its last-match thumbnail on the public status page,
+        // so the SPA knows to render the <img>. The image bytes are
+        // served by /api/monitor/:id/match-thumbnail.
+        if (this.type === "rtsp" && this.stream_status_thumbnail) {
+            obj.streamStatusThumbnail = true;
+        }
+
         return obj;
     }
 

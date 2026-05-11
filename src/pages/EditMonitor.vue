@@ -1121,7 +1121,14 @@
 
                             <template v-if="monitor.type === 'rtsp'">
                                 <div class="my-3">
-                                    <label for="rtsp-url" class="form-label">{{ $t("RTSP URL") }}</label>
+                                    <label for="rtsp-url" class="form-label">
+                                        {{ $t("RTSP URL") }}
+                                        <font-awesome-icon
+                                            icon="info-circle"
+                                            class="ms-1 text-muted"
+                                            :title="$t('RTSP Path Tooltip')"
+                                        />
+                                    </label>
                                     <input
                                         id="rtsp-url"
                                         v-model="monitor.url"
@@ -1144,6 +1151,27 @@
                                 </div>
 
                                 <div class="my-3">
+                                    <label for="rtsp-username" class="form-label">{{ $t("RTSP Username") }}</label>
+                                    <input
+                                        id="rtsp-username"
+                                        v-model="monitor.basic_auth_user"
+                                        type="text"
+                                        class="form-control"
+                                        autocomplete="off"
+                                    />
+                                    <div class="form-text">{{ $t("RTSP Credentials Description") }}</div>
+                                </div>
+
+                                <div class="my-3">
+                                    <label for="rtsp-password" class="form-label">{{ $t("RTSP Password") }}</label>
+                                    <HiddenInput
+                                        id="rtsp-password"
+                                        v-model="monitor.basic_auth_pass"
+                                        autocomplete="new-password"
+                                    />
+                                </div>
+
+                                <div class="my-3">
                                     <label class="form-label">{{ $t("RTSP Mode") }}</label>
                                     <div class="btn-group d-block" role="group">
                                         <input id="rtsp-mode-basic" v-model="monitor.streamMode" class="btn-check" type="radio" value="basic" />
@@ -1160,12 +1188,18 @@
                                     v-if="(monitor.streamMode === 'enhanced' || monitor.streamMode === 'full') && (monitor.streamProtocol === 'rtsp' || monitor.streamProtocol === 'rtsps')"
                                     class="my-3"
                                 >
-                                    <label for="rtsp-transport" class="form-label">{{ $t("RTSP Transport") }}</label>
+                                    <label for="rtsp-transport" class="form-label">
+                                        {{ $t("RTSP Transport") }}
+                                        <font-awesome-icon
+                                            icon="info-circle"
+                                            class="ms-1 text-muted"
+                                            :title="$t('RTSP Transport UDP Tooltip')"
+                                        />
+                                    </label>
                                     <select id="rtsp-transport" v-model="monitor.streamTransport" class="form-select">
                                         <option value="tcp">{{ $t("RTSP Transport TCP") }}</option>
                                         <option value="udp">{{ $t("RTSP Transport UDP") }}</option>
                                     </select>
-                                    <div class="form-text">{{ $t("RTSP Transport UDP Tooltip") }}</div>
                                 </div>
 
                                 <div
