@@ -1,10 +1,14 @@
 const { describe, test } = require("node:test");
 const assert = require("node:assert");
-const { preflight, computeBudget, urlContainsRtspTransport } = require("../../../server/monitor-types/rtsp/url-parse");
+const {
+    preflight,
+    computeBudget,
+    scrubUrlCredentialsForLog,
+    urlContainsRtspTransport,
+} = require("../../../server/monitor-types/rtsp/url-parse");
 
 /**
  * Build a stub monitor for preflight.
- *
  * @param {object} overrides Property overrides
  * @returns {object} Stub monitor
  */
@@ -39,18 +43,17 @@ describe("url-parse preflight", () => {
     });
 
     test("rejects unknown schemes", async () => {
-        await assert.rejects(
-            preflight(stub({ url: "http://example.com" })),
-            /unknown protocol/
-        );
+        await assert.rejects(preflight(stub({ url: "http://example.com" })), /unknown protocol/);
     });
 
     test("strips URL-embedded credentials and uses form credentials", async () => {
-        const ctx = await preflight(stub({
-            url: "rtsp://urluser:urlpass@example.com/s",
-            basic_auth_user: "formuser",
-            basic_auth_pass: "formpass",
-        }));
+        const ctx = await preflight(
+            stub({
+                url: "rtsp://urluser:urlpass@example.com/s",
+                basic_auth_user: "formuser",
+                basic_auth_pass: "formpass",
+            })
+        );
         assert.strictEqual(ctx.username, "formuser");
         assert.strictEqual(ctx.password, "formpass");
         assert.doesNotMatch(ctx.url, /urluser/);
@@ -58,18 +61,47 @@ describe("url-parse preflight", () => {
     });
 
     test("falls back to URL credentials when form credentials are empty", async () => {
-        const ctx = await preflight(stub({
-            url: "rtsp://urluser:urlpass@example.com/s",
-        }));
+        const ctx = await preflight(
+            stub({
+                url: "rtsp://urluser:urlpass@example.com/s",
+            })
+        );
         assert.strictEqual(ctx.username, "urluser");
         assert.strictEqual(ctx.password, "urlpass");
     });
 
+    test("preserves RTMP credentials on URL for decode auth", async () => {
+        const ctx = await preflight(
+            stub({
+                url: "rtmp://urluser:urlpass@example.com/live/stream",
+            })
+        );
+        assert.strictEqual(ctx.username, "urluser");
+        assert.strictEqual(ctx.password, "urlpass");
+        assert.match(ctx.url, /^rtmp:\/\/urluser:urlpass@example\.com\//);
+    });
+
+    test("RTMP form credentials override URL credentials", async () => {
+        const ctx = await preflight(
+            stub({
+                url: "rtmp://urluser:urlpass@example.com/live/stream",
+                basic_auth_user: "formuser",
+                basic_auth_pass: "formpass",
+            })
+        );
+        assert.strictEqual(ctx.username, "formuser");
+        assert.strictEqual(ctx.password, "formpass");
+        assert.match(ctx.url, /^rtmp:\/\/formuser:formpass@example\.com\//);
+        assert.doesNotMatch(ctx.url, /urluser/);
+    });
+
     test("strips ?rtsp_transport= URL parameter", async () => {
-        const ctx = await preflight(stub({
-            url: "rtsp://example.com/s?rtsp_transport=udp",
-            stream_transport: "tcp",
-        }));
+        const ctx = await preflight(
+            stub({
+                url: "rtsp://example.com/s?rtsp_transport=udp",
+                stream_transport: "tcp",
+            })
+        );
         assert.doesNotMatch(ctx.url, /rtsp_transport/);
         assert.strictEqual(ctx.transport, "tcp");
     });
@@ -89,9 +121,19 @@ describe("computeBudget", () => {
     });
 
     test("respects per-monitor override", () => {
+        assert.strictEqual(computeBudget({ interval: 60, stream_wall_clock_budget_sec: 15 }), 15000);
+    });
+});
+
+describe("scrubUrlCredentialsForLog", () => {
+    test("scrubs credentials before log/error echo", () => {
         assert.strictEqual(
-            computeBudget({ interval: 60, stream_wall_clock_budget_sec: 15 }),
-            15000
+            scrubUrlCredentialsForLog("rtsp://user:pass@example.com/stream"),
+            "rtsp://***@example.com/stream"
+        );
+        assert.strictEqual(
+            scrubUrlCredentialsForLog("rtsp+ssh://foo@bar@example.com/stream"),
+            "rtsp+ssh://***@example.com/stream"
         );
     });
 });

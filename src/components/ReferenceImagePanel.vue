@@ -7,13 +7,19 @@
                 <h5 class="card-title">{{ slot.label }}</h5>
 
                 <div v-if="slot.hasBlob" class="mb-2">
-                    <img v-if="thumbCache[slot.key]" :src="thumbCache[slot.key]" alt="reference thumbnail" class="ref-thumb" />
+                    <img
+                        v-if="thumbCache[slot.key]"
+                        :src="thumbCache[slot.key]"
+                        alt="reference thumbnail"
+                        class="ref-thumb"
+                    />
                     <span v-else>{{ $t("Loading") }}…</span>
                 </div>
                 <div v-else class="text-muted mb-2">{{ $t("RTSP Reference Empty") }}</div>
 
                 <div v-if="slot.url" class="form-text mb-2">
-                    {{ $t("RTSP Reference URL Label") }}: <code>{{ slot.url }}</code>
+                    {{ $t("RTSP Reference URL Label") }}:
+                    <code>{{ slot.url }}</code>
                 </div>
 
                 <div class="d-flex gap-2 align-items-center flex-wrap">
@@ -30,10 +36,20 @@
                     <button type="button" class="btn btn-outline-primary" @click="onSetUrl(slot.key)">
                         {{ $t("RTSP Upload URL") }}
                     </button>
-                    <button v-if="slot.url" type="button" class="btn btn-outline-secondary" @click="onRefresh(slot.key)">
+                    <button
+                        v-if="slot.url"
+                        type="button"
+                        class="btn btn-outline-secondary"
+                        @click="onRefresh(slot.key)"
+                    >
                         {{ $t("RTSP Refresh URL") }}
                     </button>
-                    <button v-if="slot.hasBlob" type="button" class="btn btn-outline-danger" @click="onDelete(slot.key)">
+                    <button
+                        v-if="slot.hasBlob"
+                        type="button"
+                        class="btn btn-outline-danger"
+                        @click="onDelete(slot.key)"
+                    >
                         {{ $t("Delete") }}
                     </button>
                 </div>
@@ -119,17 +135,53 @@ export default {
         dayHasBlob(v) {
             this.slotState.day.hasBlob = v;
             this.slotState.single.hasBlob = v;
-            if (v) this.loadThumb("day");
+            if (v) {
+                this.loadThumb(this.separateDayNight ? "day" : "single");
+            } else {
+                delete this.thumbCache.day;
+                delete this.thumbCache.single;
+            }
         },
         nightHasBlob(v) {
             this.slotState.night.hasBlob = v;
-            if (v) this.loadThumb("night");
+            if (v) {
+                this.loadThumb("night");
+            } else {
+                delete this.thumbCache.night;
+            }
+        },
+        dayUrl(v) {
+            this.slotState.day.url = v;
+            this.slotState.single.url = v;
+        },
+        nightUrl(v) {
+            this.slotState.night.url = v;
+        },
+        separateDayNight(v) {
+            if (v) {
+                if (this.slotState.day.hasBlob) {
+                    this.loadThumb("day");
+                }
+                if (this.slotState.night.hasBlob) {
+                    this.loadThumb("night");
+                }
+            } else if (this.slotState.single.hasBlob) {
+                this.loadThumb("single");
+            }
         },
     },
 
     mounted() {
-        if (this.dayHasBlob) this.loadThumb(this.separateDayNight ? "day" : "single");
-        if (this.nightHasBlob && this.separateDayNight) this.loadThumb("night");
+        if (this.dayHasBlob) {
+            this.loadThumb(this.separateDayNight ? "day" : "single");
+        }
+        if (this.nightHasBlob && this.separateDayNight) {
+            this.loadThumb("night");
+        }
+    },
+
+    beforeUnmount() {
+        this.thumbCache = {};
     },
 
     methods: {
@@ -139,10 +191,14 @@ export default {
 
         async loadThumb(slot) {
             const socket = this.socket();
-            if (!socket || !socket.connected) return;
+            if (!socket || !socket.connected) {
+                return;
+            }
             const realSlot = slot === "single" ? "day" : slot;
             socket.emit("rtsp:getReference", this.monitorId, realSlot, (res) => {
-                if (!res || !res.ok) return;
+                if (!res || !res.ok) {
+                    return;
+                }
                 this.thumbCache[slot] = `data:${res.contentType};base64,${res.dataBase64}`;
             });
         },
@@ -150,7 +206,9 @@ export default {
         async onFileSelected(evt, slot) {
             const file = evt.target.files && evt.target.files[0];
             evt.target.value = "";
-            if (!file) return;
+            if (!file) {
+                return;
+            }
             if (file.size > READ_LIMIT_BYTES) {
                 this.slotState[slot].status = this.$t("RTSP Reference Too Large");
                 return;
@@ -159,7 +217,11 @@ export default {
             try {
                 const buf = await file.arrayBuffer();
                 const b64 = arrayBufferToBase64(buf);
-                this.callSocket("rtsp:uploadReference", [this.monitorId, slot === "single" ? "day" : slot, { data: b64 }], slot);
+                this.callSocket(
+                    "rtsp:uploadReference",
+                    [this.monitorId, slot === "single" ? "day" : slot, { data: b64 }],
+                    slot
+                );
             } catch (err) {
                 this.slotState[slot].status = err.message || String(err);
             }
@@ -168,7 +230,9 @@ export default {
         onSetUrl(slot) {
             // eslint-disable-next-line no-alert
             const url = window.prompt(this.$t("RTSP Reference URL Prompt"), this.slotState[slot].url || "https://");
-            if (!url) return;
+            if (!url) {
+                return;
+            }
             this.slotState[slot].status = this.$t("RTSP Reference Fetching URL");
             this.callSocket("rtsp:uploadReference", [this.monitorId, slot === "single" ? "day" : slot, { url }], slot);
         },
@@ -180,11 +244,15 @@ export default {
 
         onDelete(slot) {
             // eslint-disable-next-line no-alert
-            if (!window.confirm(this.$t("Confirm"))) return;
+            if (!window.confirm(this.$t("Confirm"))) {
+                return;
+            }
             this.slotState[slot].status = "";
             const realSlot = slot === "single" ? "day" : slot;
             const socket = this.socket();
-            if (!socket) return;
+            if (!socket) {
+                return;
+            }
             socket.emit("rtsp:deleteReference", this.monitorId, realSlot, (res) => {
                 if (!res || !res.ok) {
                     this.slotState[slot].status = (res && res.msg) || this.$t("RTSP Reference Failed");
@@ -193,7 +261,8 @@ export default {
                 this.slotState[slot].hasBlob = false;
                 this.slotState[slot].url = null;
                 delete this.thumbCache[slot];
-                this.$emit("uploaded", { slot, hasBlob: false, url: null });
+                delete this.thumbCache[realSlot];
+                this.$emit("uploaded", { slot, hasBlob: false, url: null, fingerprint: null });
             });
         },
 
@@ -209,10 +278,18 @@ export default {
                     return;
                 }
                 this.slotState[slot].hasBlob = true;
-                if ("url" in res) this.slotState[slot].url = res.url;
-                this.slotState[slot].status = `${res.width || "?"}×${res.height || "?"} — ${Math.round((res.byteSize || 0) / 1024)} KB`;
+                if ("url" in res) {
+                    this.slotState[slot].url = res.url;
+                }
+                this.slotState[slot].status =
+                    `${res.width || "?"}×${res.height || "?"} — ${Math.round((res.byteSize || 0) / 1024)} KB`;
                 this.loadThumb(slot);
-                this.$emit("uploaded", { slot, hasBlob: true, url: res.url || null });
+                this.$emit("uploaded", {
+                    slot,
+                    hasBlob: true,
+                    url: res.url || null,
+                    fingerprint: res.fingerprint || null,
+                });
             });
         },
     },

@@ -14,11 +14,10 @@ try {
 
 /**
  * Synthesise a simple test JPEG via sharp.
- *
  * @param {object} opts Options
- * @param {number} [opts.width=128] Width
- * @param {number} [opts.height=128] Height
- * @param {number[]} [opts.color=[120,120,120]] RGB fill
+ * @param {number} opts.width Width
+ * @param {number} opts.height Height
+ * @param {number[]} opts.color RGB fill
  * @returns {Promise<Buffer>} JPEG bytes
  */
 async function makeJpeg(opts = {}) {
@@ -121,20 +120,20 @@ describe("image-pipeline — fingerprint", { skip }, () => {
 
 describe("image-pipeline — dHash math", { skip }, () => {
     test("dHash of a monotonic gradient", () => {
-        // Build a horizontally-increasing 9×8 buffer; left < right
+        // Build a horizontally-decreasing 9×8 buffer; left > right
         // everywhere → all bits set.
         const w = 9;
         const h = 8;
         const buf = Buffer.alloc(w * h);
         for (let r = 0; r < h; r++) {
             for (let c = 0; c < w; c++) {
-                buf[r * w + c] = c * 30;
+                buf[r * w + c] = 255 - c * 30;
             }
         }
         const hash = pipeline.dHash(buf, w, h);
-        // Each row: bits 0..6 set → 0xFE
+        // Each row: bits 0..7 set → 0xFF
         for (let i = 0; i < h; i++) {
-            assert.strictEqual(hash[i], 0xfe, `row ${i}: got 0x${hash[i].toString(16)}`);
+            assert.strictEqual(hash[i], 0xff, `row ${i}: got 0x${hash[i].toString(16)}`);
         }
     });
 

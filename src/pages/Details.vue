@@ -100,6 +100,7 @@
                 </span>
                 <span v-if="monitor.type === 'radius'">Radius: {{ filterPassword(monitor.hostname) }}</span>
                 <span v-if="monitor.type === 'redis'">{{ filterPassword(monitor.databaseConnectionString) }}</span>
+                <span v-if="monitor.type === 'rtsp'">Stream: {{ filterPassword(monitor.url) }}</span>
                 <span v-if="monitor.type === 'sqlserver'">
                     SQL Server: {{ filterPassword(monitor.databaseConnectionString) }}
                 </span>

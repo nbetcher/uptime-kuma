@@ -11,10 +11,10 @@ exports.up = function (knex) {
             // Full-mode references
             table.integer("stream_match_threshold").defaultTo(null);
             table.boolean("stream_separate_day_night").defaultTo(null);
-            table.binary("stream_reference_day_blob").defaultTo(null);
+            table.specificType("stream_reference_day_blob", "mediumblob").nullable();
             table.text("stream_reference_day_url").defaultTo(null);
             table.binary("stream_reference_day_hash").defaultTo(null);
-            table.binary("stream_reference_night_blob").defaultTo(null);
+            table.specificType("stream_reference_night_blob", "mediumblob").nullable();
             table.text("stream_reference_night_url").defaultTo(null);
             table.binary("stream_reference_night_hash").defaultTo(null);
 
@@ -41,7 +41,7 @@ exports.up = function (knex) {
                 .references("id").inTable("monitor").onDelete("CASCADE");
             table.string("kind", 8).notNullable().defaultTo("down");
             table.timestamp("captured_at").defaultTo(knex.fn.now());
-            table.binary("image_blob").notNullable();
+            table.specificType("image_blob", "mediumblob").notNullable();
             table.index(["monitor_id", "kind", "captured_at"]);
         });
 };

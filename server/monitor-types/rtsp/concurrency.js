@@ -43,7 +43,6 @@ class TokenBucket {
      * The `settled` flag prevents the timer and `release()` paths
      * from both firing — without it, a near-simultaneous timeout +
      * release would double-decrement `active`.
-     *
      * @param {number} timeoutMs Maximum wait
      * @returns {Promise<void>}
      */
@@ -55,14 +54,20 @@ class TokenBucket {
         return new Promise((resolve, reject) => {
             const entry = { settled: false };
             entry.timer = setTimeout(() => {
-                if (entry.settled) return;
+                if (entry.settled) {
+                    return;
+                }
                 entry.settled = true;
                 const idx = this.queue.indexOf(entry);
-                if (idx >= 0) this.queue.splice(idx, 1);
+                if (idx >= 0) {
+                    this.queue.splice(idx, 1);
+                }
                 reject(new SkipCheckError("concurrency limit timeout"));
             }, timeoutMs);
             entry.resolve = () => {
-                if (entry.settled) return;
+                if (entry.settled) {
+                    return;
+                }
                 entry.settled = true;
                 clearTimeout(entry.timer);
                 this.active++;
@@ -80,7 +85,9 @@ class TokenBucket {
     release() {
         this.active--;
         const next = this.queue.shift();
-        if (next) next.resolve();
+        if (next) {
+            next.resolve();
+        }
     }
 }
 
@@ -89,7 +96,6 @@ const monitorMutexes = new Map(); // monitor.id → Promise chain tip
 
 /**
  * Acquire a slot in the global decode bucket.
- *
  * @param {object} monitor Monitor row (uses `timeout` + `id`)
  * @param {number} budgetMs Wall-clock budget for the check
  * @returns {Promise<{release: Function}>} Disposable token

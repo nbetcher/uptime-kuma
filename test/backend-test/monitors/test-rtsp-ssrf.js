@@ -60,6 +60,14 @@ describe("ipv6Bucket", () => {
         assert.strictEqual(ipv6Bucket("ff02::1"), "multicast");
     });
 
+    test("classifies reserved IPv6 ranges", () => {
+        assert.strictEqual(ipv6Bucket("100::1"), "discard");
+        assert.strictEqual(ipv6Bucket("2001:db8::1"), "documentation");
+        assert.strictEqual(ipv6Bucket("2001::1"), "teredo");
+        assert.strictEqual(ipv6Bucket("2002:c000:0201::"), "6to4");
+        assert.strictEqual(ipv6Bucket("fec0::1"), "site-local");
+    });
+
     test("returns null for public IPv6", () => {
         assert.strictEqual(ipv6Bucket("2001:4860:4860::8888"), null);
     });

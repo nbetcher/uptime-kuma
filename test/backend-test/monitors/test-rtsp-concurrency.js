@@ -1,10 +1,6 @@
 const { describe, test } = require("node:test");
 const assert = require("node:assert");
-const {
-    TokenBucket,
-    SkipCheckError,
-    acquireMonitorMutex,
-} = require("../../../server/monitor-types/rtsp/concurrency");
+const { TokenBucket, SkipCheckError, acquireMonitorMutex } = require("../../../server/monitor-types/rtsp/concurrency");
 
 describe("TokenBucket", () => {
     test("immediate acquire when under limit", async () => {

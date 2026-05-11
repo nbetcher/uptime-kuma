@@ -9,26 +9,16 @@ describe("validateStreamMonitor", () => {
     });
 
     test("requires URL", () => {
-        assert.throws(
-            () => validateStreamMonitor({ type: "rtsp" }, null),
-            /require a URL/
-        );
+        assert.throws(() => validateStreamMonitor({ type: "rtsp" }, null), /require a URL/);
     });
 
     test("accepts a minimal Basic-mode monitor", () => {
-        validateStreamMonitor(
-            { type: "rtsp", url: "rtsp://x/s", streamMode: "basic" },
-            null
-        );
+        validateStreamMonitor({ type: "rtsp", url: "rtsp://x/s", streamMode: "basic" }, null);
     });
 
     test("rejects invalid streamMode", () => {
         assert.throws(
-            () =>
-                validateStreamMonitor(
-                    { type: "rtsp", url: "rtsp://x/s", streamMode: "weird" },
-                    null
-                ),
+            () => validateStreamMonitor({ type: "rtsp", url: "rtsp://x/s", streamMode: "weird" }, null),
             /Invalid streamMode/
         );
     });

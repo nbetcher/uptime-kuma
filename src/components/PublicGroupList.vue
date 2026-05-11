@@ -114,10 +114,13 @@
                                                     />
                                                 </div>
                                                 <!-- UI-013: last-match thumbnail for opted-in RTSP monitors -->
-                                                <div v-if="monitor.element.streamStatusThumbnail" class="rtsp-thumbnail mt-2">
+                                                <div
+                                                    v-if="monitor.element.streamStatusThumbnail"
+                                                    class="rtsp-thumbnail mt-2"
+                                                >
                                                     <img
                                                         :src="`/api/monitor/${monitor.element.id}/match-thumbnail`"
-                                                        alt=""
+                                                        :alt="$t('RTSP Status Thumbnail Alt', [monitor.element.name])"
                                                         loading="lazy"
                                                         @error="$event.target.style.display = 'none'"
                                                     />

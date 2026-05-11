@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   build:
-    if: github.repository == 'louislam/uptime-kuma'
+    if: github.repository == 'nbetcher/uptime-kuma'
     name: Hello new contributor
     runs-on: ubuntu-latest
     timeout-minutes: 60

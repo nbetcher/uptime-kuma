@@ -11,7 +11,6 @@ const VALID_SLOTS = ["day", "night", "single"];
  * Map the public `slot` discriminator to internal column names. The
  * 'single' slot reuses the Day column because the storage layout is
  * keyed by (day|night) only.
- *
  * @param {string} slot 'day' | 'night' | 'single'
  * @returns {{blobCol: string, urlCol: string, hashCol: string}}
  */
@@ -34,7 +33,6 @@ function columnsForSlot(slot) {
 /**
  * Internal: process raw image bytes into the canonical (blob,
  * fingerprint, sha256) tuple.
- *
  * @param {Buffer} rawBytes Source image bytes
  * @returns {Promise<{blob: Buffer, hash: Buffer, sha256: Buffer, width: number, height: number}>}
  */
@@ -63,7 +61,6 @@ async function processRaw(rawBytes) {
 
 /**
  * Persist a processed reference onto the monitor row.
- *
  * @param {number} monitorId Monitor ID
  * @param {string} slot 'day' | 'night' | 'single'
  * @param {Buffer} blob Canonical JPEG
@@ -73,16 +70,17 @@ async function processRaw(rawBytes) {
  */
 async function persist(monitorId, slot, blob, hash, sourceUrl) {
     const cols = columnsForSlot(slot);
-    await R.exec(
-        `UPDATE monitor SET ${cols.blobCol} = ?, ${cols.urlCol} = ?, ${cols.hashCol} = ? WHERE id = ?`,
-        [blob, sourceUrl, hash, monitorId]
-    );
+    await R.exec(`UPDATE monitor SET ${cols.blobCol} = ?, ${cols.urlCol} = ?, ${cols.hashCol} = ? WHERE id = ?`, [
+        blob,
+        sourceUrl,
+        hash,
+        monitorId,
+    ]);
 }
 
 /**
  * Upload a reference from raw bytes (multipart upload). Per HLDS
  * §5.10.
- *
  * @param {object} args Arguments
  * @param {number} args.monitorId Monitor ID
  * @param {string} args.slot 'day' | 'night' | 'single'
@@ -92,7 +90,9 @@ async function persist(monitorId, slot, blob, hash, sourceUrl) {
  */
 async function uploadBlob(args) {
     const { monitorId, slot, bytes, userId } = args;
-    if (!VALID_SLOTS.includes(slot)) throw new Error(`invalid slot: ${slot}`);
+    if (!VALID_SLOTS.includes(slot)) {
+        throw new Error(`invalid slot: ${slot}`);
+    }
     if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
         throw new Error("empty upload");
     }
@@ -119,7 +119,6 @@ async function uploadBlob(args) {
 
 /**
  * Upload a reference by URL (server fetches it).
- *
  * @param {object} args Arguments
  * @param {number} args.monitorId Monitor ID
  * @param {string} args.slot 'day' | 'night' | 'single'
@@ -130,8 +129,12 @@ async function uploadBlob(args) {
  */
 async function uploadUrl(args) {
     const { monitorId, slot, url, monitorHostname, userId } = args;
-    if (!VALID_SLOTS.includes(slot)) throw new Error(`invalid slot: ${slot}`);
-    if (!url) throw new Error("URL is required");
+    if (!VALID_SLOTS.includes(slot)) {
+        throw new Error(`invalid slot: ${slot}`);
+    }
+    if (!url) {
+        throw new Error("URL is required");
+    }
 
     const bytes = await fetchUrl(url, { monitorHostname });
     const processed = await processRaw(bytes);
@@ -159,18 +162,16 @@ async function uploadUrl(args) {
 /**
  * Re-fetch the stored URL and refresh the cached BLOB. Returns the
  * same metadata shape as uploadUrl.
- *
  * @param {object} args Arguments
  * @returns {Promise<object>}
  */
 async function refreshUrl(args) {
     const { monitorId, slot, monitorHostname, userId } = args;
-    if (!VALID_SLOTS.includes(slot)) throw new Error(`invalid slot: ${slot}`);
+    if (!VALID_SLOTS.includes(slot)) {
+        throw new Error(`invalid slot: ${slot}`);
+    }
     const cols = columnsForSlot(slot);
-    const row = await R.getRow(
-        `SELECT ${cols.urlCol} as url FROM monitor WHERE id = ?`,
-        [monitorId]
-    );
+    const row = await R.getRow(`SELECT ${cols.urlCol} as url FROM monitor WHERE id = ?`, [monitorId]);
     if (!row || !row.url) {
         throw new Error("no URL stored for this slot");
     }
@@ -199,13 +200,14 @@ async function refreshUrl(args) {
 
 /**
  * Clear a reference slot.
- *
  * @param {object} args Arguments
  * @returns {Promise<void>}
  */
 async function deleteSlot(args) {
     const { monitorId, slot, userId } = args;
-    if (!VALID_SLOTS.includes(slot)) throw new Error(`invalid slot: ${slot}`);
+    if (!VALID_SLOTS.includes(slot)) {
+        throw new Error(`invalid slot: ${slot}`);
+    }
     const cols = columnsForSlot(slot);
     await R.exec(
         `UPDATE monitor SET ${cols.blobCol} = NULL, ${cols.urlCol} = NULL, ${cols.hashCol} = NULL WHERE id = ?`,
@@ -223,19 +225,19 @@ async function deleteSlot(args) {
 
 /**
  * Fetch the cached BLOB for an HTTP GET response.
- *
  * @param {object} args Arguments
  * @returns {Promise<Buffer|null>}
  */
 async function getBlob(args) {
     const { monitorId, slot } = args;
-    if (!VALID_SLOTS.includes(slot)) throw new Error(`invalid slot: ${slot}`);
+    if (!VALID_SLOTS.includes(slot)) {
+        throw new Error(`invalid slot: ${slot}`);
+    }
     const cols = columnsForSlot(slot);
-    const row = await R.getRow(
-        `SELECT ${cols.blobCol} as blob FROM monitor WHERE id = ?`,
-        [monitorId]
-    );
-    if (!row || !row.blob) return null;
+    const row = await R.getRow(`SELECT ${cols.blobCol} as blob FROM monitor WHERE id = ?`, [monitorId]);
+    if (!row || !row.blob) {
+        return null;
+    }
     return Buffer.isBuffer(row.blob) ? row.blob : Buffer.from(row.blob);
 }
 
@@ -243,7 +245,6 @@ async function getBlob(args) {
  * Persist a last-match thumbnail or DOWN-frame image, bounded to 5
  * rows per (monitor_id, kind). Inline DELETE in the same transaction
  * keeps the table size capped. Per OP-008.
- *
  * @param {object} args Arguments
  * @param {number} args.monitorId Monitor ID
  * @param {'down'|'match'} args.kind Image kind

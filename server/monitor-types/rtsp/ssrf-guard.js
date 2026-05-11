@@ -12,17 +12,20 @@ const ALLOWED_CONTENT_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/we
 
 /**
  * Convert a dotted-quad IPv4 string to a uint32 in network byte order.
- *
  * @param {string} ip Dotted IPv4
  * @returns {number} 32-bit integer
  */
 function ipv4ToInt(ip) {
     const parts = ip.split(".");
-    if (parts.length !== 4) return NaN;
+    if (parts.length !== 4) {
+        return NaN;
+    }
     let n = 0;
     for (let i = 0; i < 4; i++) {
         const p = parseInt(parts[i], 10);
-        if (!Number.isFinite(p) || p < 0 || p > 255) return NaN;
+        if (!Number.isFinite(p) || p < 0 || p > 255) {
+            return NaN;
+        }
         // Use multiplication to avoid 32-bit signed shift on the high byte
         n = n * 256 + p;
     }
@@ -33,76 +36,184 @@ function ipv4ToInt(ip) {
  * Determine which "private range bucket" an IPv4 falls into. Used by
  * the SSRF carveout — references hosted on the same private network
  * as the monitored camera are permitted (HLDS §12.4 / §20.4).
- *
  * @param {string} ip IPv4 dotted-quad
  * @returns {string|null} Bucket name or null if not private/blocked
  */
 function ipv4Bucket(ip) {
     const n = ipv4ToInt(ip);
-    if (!Number.isFinite(n)) return null;
+    if (!Number.isFinite(n)) {
+        return null;
+    }
     // 127.0.0.0/8 — loopback
-    if (n >= 0x7f000000 && n <= 0x7fffffff) return "loopback";
+    if (n >= 0x7f000000 && n <= 0x7fffffff) {
+        return "loopback";
+    }
     // 10.0.0.0/8
-    if (n >= 0x0a000000 && n <= 0x0affffff) return "rfc1918-10";
+    if (n >= 0x0a000000 && n <= 0x0affffff) {
+        return "rfc1918-10";
+    }
     // 172.16.0.0/12  → 172.16.0.0 - 172.31.255.255
-    if (n >= 0xac100000 && n <= 0xac1fffff) return "rfc1918-172";
+    if (n >= 0xac100000 && n <= 0xac1fffff) {
+        return "rfc1918-172";
+    }
     // 192.168.0.0/16
-    if (n >= 0xc0a80000 && n <= 0xc0a8ffff) return "rfc1918-192";
+    if (n >= 0xc0a80000 && n <= 0xc0a8ffff) {
+        return "rfc1918-192";
+    }
     // 169.254.0.0/16 — link-local
-    if (n >= 0xa9fe0000 && n <= 0xa9feffff) return "link-local";
+    if (n >= 0xa9fe0000 && n <= 0xa9feffff) {
+        return "link-local";
+    }
     // 224.0.0.0/4 — multicast
-    if (n >= 0xe0000000 && n <= 0xefffffff) return "multicast";
+    if (n >= 0xe0000000 && n <= 0xefffffff) {
+        return "multicast";
+    }
     // 0.0.0.0/8 — "this network"
-    if (n >= 0x00000000 && n <= 0x00ffffff) return "this-network";
+    if (n >= 0x00000000 && n <= 0x00ffffff) {
+        return "this-network";
+    }
     return null;
 }
 
 /**
+ * Expand a compressed IPv6 address into eight 16-bit segments.
+ * @param {string} ip IPv6 address
+ * @returns {number[]|null} Parsed segments, or null for invalid input
+ */
+function parseIpv6Segments(ip) {
+    const withoutZone = ip.toLowerCase().split("%")[0];
+    if (withoutZone.includes(".")) {
+        return null;
+    }
+
+    const compressedParts = withoutZone.split("::");
+    if (compressedParts.length > 2) {
+        return null;
+    }
+
+    const head = compressedParts[0] ? compressedParts[0].split(":").filter(Boolean) : [];
+    const tail =
+        compressedParts.length === 2 && compressedParts[1] ? compressedParts[1].split(":").filter(Boolean) : [];
+    const fillLength = compressedParts.length === 2 ? 8 - head.length - tail.length : 0;
+    if (fillLength < 0) {
+        return null;
+    }
+
+    const rawSegments = compressedParts.length === 2 ? [...head, ...Array(fillLength).fill("0"), ...tail] : head;
+    if (rawSegments.length !== 8) {
+        return null;
+    }
+
+    const segments = rawSegments.map((segment) => {
+        if (!/^[0-9a-f]{1,4}$/.test(segment)) {
+            return NaN;
+        }
+        return parseInt(segment, 16);
+    });
+    if (segments.some((segment) => !Number.isFinite(segment))) {
+        return null;
+    }
+    return segments;
+}
+
+/**
+ * Check whether a contiguous segment range is all zeroes.
+ * @param {number[]} segments IPv6 segments
+ * @param {number} start Inclusive start index
+ * @param {number} end Exclusive end index
+ * @returns {boolean} True if all segments in range are zero
+ */
+function segmentsAreZero(segments, start, end) {
+    return segments.slice(start, end).every((segment) => segment === 0);
+}
+
+/**
  * Classify an IPv6 address.
- *
  * @param {string} ip IPv6 address
  * @returns {string|null} Bucket name or null
  */
 function ipv6Bucket(ip) {
-    if (!ip || typeof ip !== "string") return null;
-    const lower = ip.toLowerCase();
-    if (lower === "::1" || lower === "::1/128" || lower === "0:0:0:0:0:0:0:1") {
-        return "loopback";
+    if (!ip || typeof ip !== "string") {
+        return null;
     }
-    if (lower === "::" || lower === "0:0:0:0:0:0:0:0") {
+    const segments = parseIpv6Segments(ip);
+    if (!segments) {
+        return null;
+    }
+
+    if (segmentsAreZero(segments, 0, 8)) {
         return "this-network";
     }
-    // Drop zone identifier
-    const noZone = lower.split("%")[0];
-    const first = noZone.split(":")[0];
-    if (!first) return null;
-    const firstNum = parseInt(first, 16);
-    if (!Number.isFinite(firstNum)) return null;
+    if (segmentsAreZero(segments, 0, 7) && segments[7] === 1) {
+        return "loopback";
+    }
+
+    if (segmentsAreZero(segments, 0, 5) && segments[5] === 0xffff) {
+        return ipv4Bucket(`${segments[6] >> 8}.${segments[6] & 0xff}.${segments[7] >> 8}.${segments[7] & 0xff}`);
+    }
+
+    // Deprecated IPv4-compatible ::/96 and NAT64 well-known 64:ff9b::/96 can route to IPv4 space.
+    if (segmentsAreZero(segments, 0, 6)) {
+        return "ipv4-compatible";
+    }
+    if (segments[0] === 0x0064 && segments[1] === 0xff9b && segmentsAreZero(segments, 2, 6)) {
+        return "ipv4-translation";
+    }
+
+    const firstNum = segments[0];
     // fe80::/10 — link-local
-    if ((firstNum & 0xffc0) === 0xfe80) return "link-local";
+    if ((firstNum & 0xffc0) === 0xfe80) {
+        return "link-local";
+    }
+    // fec0::/10 — deprecated site-local
+    if ((firstNum & 0xffc0) === 0xfec0) {
+        return "site-local";
+    }
     // fc00::/7 — unique-local (ULA)
-    if ((firstNum & 0xfe00) === 0xfc00) return "ula";
+    if ((firstNum & 0xfe00) === 0xfc00) {
+        return "ula";
+    }
     // ff00::/8 — multicast
-    if ((firstNum & 0xff00) === 0xff00) return "multicast";
+    if ((firstNum & 0xff00) === 0xff00) {
+        return "multicast";
+    }
+    // 100::/64 — discard-only prefix
+    if (firstNum === 0x0100 && segmentsAreZero(segments, 1, 4)) {
+        return "discard";
+    }
+    // 2001:db8::/32 — documentation prefix
+    if (firstNum === 0x2001 && segments[1] === 0x0db8) {
+        return "documentation";
+    }
+    // 2001::/32 — Teredo tunneling; 2002::/16 — deprecated 6to4.
+    if (firstNum === 0x2001 && segments[1] === 0x0000) {
+        return "teredo";
+    }
+    if (firstNum === 0x2002) {
+        return "6to4";
+    }
     return null;
 }
 
 /**
  * Classify any resolved IP address (v4 or v6) into a private-range
  * bucket name. Returns null for public IPs.
- *
  * @param {string} ip Resolved IP
  * @returns {string|null} Bucket name (or null = public/unknown)
  */
 function classifyIp(ip) {
-    if (!ip) return null;
+    if (!ip) {
+        return null;
+    }
     if (ip.includes(":")) {
         // IPv4-mapped IPv6 (::ffff:1.2.3.4) must be reclassified as
         // IPv4 — otherwise an attacker could route a request to e.g.
         // ::ffff:127.0.0.1 and bypass the loopback check.
         const lower = ip.toLowerCase();
         const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-        if (mapped) return ipv4Bucket(mapped[1]);
+        if (mapped) {
+            return ipv4Bucket(mapped[1]);
+        }
         return ipv6Bucket(ip);
     }
     return ipv4Bucket(ip);
@@ -112,7 +223,6 @@ function classifyIp(ip) {
  * Resolve a hostname's first IP via DNS lookup. We pin to the first
  * result to prevent DNS-rebinding between the SSRF check and the
  * connect. Returns both the IP and its family.
- *
  * @param {string} hostname Hostname to resolve
  * @returns {Promise<{address: string, family: number}>}
  */
@@ -122,12 +232,11 @@ async function resolveOnce(hostname) {
 
 /**
  * Fetch a URL with SSRF protections. Per OP-006 / HLDS §5.9.
- *
  * @param {string} urlStr URL to fetch
- * @param {object} [opts] Options
- * @param {string} [opts.monitorHostname] Hostname of the monitored
+ * @param {object} opts Options
+ * @param {string} opts.monitorHostname Hostname of the monitored
  *     camera — used for the "same private range" carveout.
- * @param {number} [opts.maxBytes] Body cap
+ * @param {number} opts.maxBytes Body cap
  * @returns {Promise<Buffer>} Response body
  */
 async function fetchUrl(urlStr, opts = {}) {
@@ -222,7 +331,9 @@ async function fetchUrl(urlStr, opts = {}) {
                 let total = 0;
                 let aborted = false;
                 res.on("data", (chunk) => {
-                    if (aborted) return;
+                    if (aborted) {
+                        return;
+                    }
                     total += chunk.length;
                     if (total > maxBytes) {
                         aborted = true;
@@ -232,11 +343,15 @@ async function fetchUrl(urlStr, opts = {}) {
                     chunks.push(chunk);
                 });
                 res.on("end", () => {
-                    if (aborted) return;
+                    if (aborted) {
+                        return;
+                    }
                     resolve(Buffer.concat(chunks, total));
                 });
                 res.on("error", (err) => {
-                    if (!aborted) reject(err);
+                    if (!aborted) {
+                        reject(err);
+                    }
                 });
             }
         );
@@ -254,6 +369,7 @@ module.exports = {
     ALLOWED_CONTENT_TYPES,
     ipv4ToInt,
     ipv4Bucket,
+    parseIpv6Segments,
     ipv6Bucket,
     classifyIp,
     resolveOnce,

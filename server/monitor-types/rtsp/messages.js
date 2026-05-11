@@ -48,8 +48,12 @@ exports.messages = {
         if (dayPresent && nightPresent) {
             return `scene mismatch: distance ${Math.min(day, night)}/128 > threshold ${thr}/128 (Day=${day}, Night=${night})`;
         }
-        if (dayPresent) return `scene mismatch: distance ${day}/128 > threshold ${thr}/128`;
-        if (nightPresent) return `scene mismatch: distance ${night}/128 > threshold ${thr}/128`;
+        if (dayPresent) {
+            return `scene mismatch: distance ${day}/128 > threshold ${thr}/128`;
+        }
+        if (nightPresent) {
+            return `scene mismatch: distance ${night}/128 > threshold ${thr}/128`;
+        }
         return `scene mismatch: no scores computed`;
     },
     NO_FRAME: () => "no frames received within wall-clock budget",

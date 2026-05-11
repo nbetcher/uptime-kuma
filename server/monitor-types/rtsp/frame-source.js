@@ -24,10 +24,9 @@ const { messages } = require("./messages");
  * Promise.race against a timeout; rejects with TimeoutError. Avoids
  * the unhandled-rejection trap by using a `settled` flag in both
  * the inner promise's continuation and the timer body.
- *
  * @param {Promise} p Inner promise
  * @param {number} ms Deadline in ms
- * @param {Function} [onTimeout] Cleanup hook called if the timer wins
+ * @param {Function} onTimeout Cleanup hook called if the timer wins
  * @returns {Promise} resolved/rejected output
  */
 function withDeadline(p, ms, onTimeout) {
@@ -35,7 +34,9 @@ function withDeadline(p, ms, onTimeout) {
     let timer;
     return new Promise((resolve, reject) => {
         timer = setTimeout(() => {
-            if (settled) return;
+            if (settled) {
+                return;
+            }
             settled = true;
             if (onTimeout) {
                 try {
@@ -49,13 +50,17 @@ function withDeadline(p, ms, onTimeout) {
 
         p.then(
             (v) => {
-                if (settled) return;
+                if (settled) {
+                    return;
+                }
                 settled = true;
                 clearTimeout(timer);
                 resolve(v);
             },
             (e) => {
-                if (settled) return;
+                if (settled) {
+                    return;
+                }
                 settled = true;
                 clearTimeout(timer);
                 reject(e);
@@ -67,16 +72,24 @@ function withDeadline(p, ms, onTimeout) {
 /**
  * Build the AVDictionary-style options object passed to node-av at
  * session-open time. Per HLDS §6.2.
- *
  * @param {object} ctx Preflight context
  * @returns {object} Options for node-av's open call
  */
 function buildOpenOptions(ctx) {
     const opts = {};
-    if (ctx.transport === "udp") opts.rtsp_transport = "udp";
-    else opts.rtsp_transport = "tcp";
-    if (ctx.username) opts.rtsp_user = ctx.username;
-    if (ctx.password) opts.rtsp_pass = ctx.password;
+    if (ctx.protocol === "rtsp" || ctx.protocol === "rtsps") {
+        if (ctx.transport === "udp") {
+            opts.rtsp_transport = "udp";
+        } else {
+            opts.rtsp_transport = "tcp";
+        }
+        if (ctx.username) {
+            opts.rtsp_user = ctx.username;
+        }
+        if (ctx.password) {
+            opts.rtsp_pass = ctx.password;
+        }
+    }
     if (!ctx.tlsVerify && (ctx.protocol === "rtsps" || ctx.protocol === "rtmps")) {
         opts.tls_verify = "0";
     }
@@ -113,7 +126,6 @@ class NodeAvFrameSource {
      * Open a node-av session for the given URL. Tries the documented
      * `Demuxer.create(...)`/`Decoder.create(...)` pair first; falls
      * back to other shapes if present.
-     *
      * @param {object} ctx Preflight context
      * @returns {Promise<NodeAvFrameSource>} Opened source
      */
@@ -123,17 +135,13 @@ class NodeAvFrameSource {
         let decoder = null;
         try {
             if (av.Demuxer && typeof av.Demuxer.create === "function") {
-                demuxer = await withDeadline(
-                    av.Demuxer.create(ctx.url, opts),
-                    ctx.budgetMs
-                );
-                const videoStream = demuxer.streams?.find?.((s) => s.codecType === "video")
-                    || demuxer.videoStream;
+                demuxer = await withDeadline(av.Demuxer.create(ctx.url, opts), ctx.budgetMs);
+                const videoStream = demuxer.streams?.find?.((s) => s.codecType === "video") || demuxer.videoStream;
                 if (!videoStream) {
                     throw new Error("no video stream in input");
                 }
                 if (av.Decoder && typeof av.Decoder.create === "function") {
-                    decoder = await av.Decoder.create(videoStream);
+                    decoder = await withDeadline(av.Decoder.create(videoStream), ctx.budgetMs);
                 }
             } else if (av.MediaInput && typeof av.MediaInput.open === "function") {
                 demuxer = await withDeadline(av.MediaInput.open(ctx.url, opts), ctx.budgetMs);
@@ -153,12 +161,13 @@ class NodeAvFrameSource {
      * end of stream. Per HLDS §6.1, this MUST be wrapped in a
      * deadline at the caller so a hung session doesn't outlive the
      * wall-clock budget.
-     *
-     * @param {number} [remainingMs] Max wait for this frame
+     * @param {number} remainingMs Max wait for this frame
      * @returns {Promise<object|null>} Frame or null
      */
     async next(remainingMs) {
-        if (this._closed) return null;
+        if (this._closed) {
+            return null;
+        }
         // On timeout, signal the underlying iterator/demuxer to
         // unwind so its pending I/O is released promptly rather than
         // dangling until the caller's `finally` close() — limits the
@@ -184,31 +193,24 @@ class NodeAvFrameSource {
             if (this.decoder && typeof this.decoder.frames === "function") {
                 if (!this._frameIterator) {
                     const iter = this.decoder.frames();
-                    this._frameIterator = iter[Symbol.asyncIterator]
-                        ? iter[Symbol.asyncIterator]()
-                        : iter;
+                    this._frameIterator = iter[Symbol.asyncIterator] ? iter[Symbol.asyncIterator]() : iter;
                 }
                 const p = this._frameIterator.next();
-                const wrapped = remainingMs && remainingMs > 0
-                    ? withDeadline(p, remainingMs, abort)
-                    : p;
+                const wrapped = remainingMs && remainingMs > 0 ? withDeadline(p, remainingMs, abort) : p;
                 const result = await wrapped;
-                if (!result || result.done) return null;
+                if (!result || result.done) {
+                    return null;
+                }
                 return result.value;
             }
             // Legacy / alternative API surfaces.
             const session = this.demuxer;
-            const fn =
-                session.readFrame
-                || session.nextFrame
-                || session.decode;
+            const fn = session.readFrame || session.nextFrame || session.decode;
             if (typeof fn !== "function") {
                 throw new Error("node-av: no recognised frame-iteration API");
             }
             const p = fn.call(session);
-            const wrapped = remainingMs && remainingMs > 0
-                ? withDeadline(p, remainingMs, abort)
-                : p;
+            const wrapped = remainingMs && remainingMs > 0 ? withDeadline(p, remainingMs, abort) : p;
             return await wrapped;
         } catch (e) {
             const msg = (e && e.message) || String(e);
@@ -223,12 +225,13 @@ class NodeAvFrameSource {
      * Encode a raw frame to JPEG. The exact frame layout depends on
      * the decoder — H.264/H.265 typically produce YUV420P. node-av's
      * filter graph converts to RGB before we hand off to sharp.
-     *
      * @param {object} frame Raw frame from `next()`
      * @returns {Promise<Buffer>} JPEG bytes
      */
     async toJpeg(frame) {
-        if (!frame) throw new Error(messages.FRAME_INVALID("null frame"));
+        if (!frame) {
+            throw new Error(messages.FRAME_INVALID("null frame"));
+        }
 
         // Case 1: frame exposes a direct JPEG encoder
         if (typeof frame.toJpeg === "function") {
@@ -260,13 +263,17 @@ class NodeAvFrameSource {
             throw new Error(messages.FRAME_INVALID("unknown frame layout"));
         }
         if (fmt && /yuv|nv12|nv21/.test(fmt)) {
-            throw new Error(messages.FRAME_INVALID(
-                `frame is in ${fmt}; configure the decoder to output RGB via node-av's filter graph`
-            ));
+            throw new Error(
+                messages.FRAME_INVALID(
+                    `frame is in ${fmt}; configure the decoder to output RGB via node-av's filter graph`
+                )
+            );
         }
         const channels = data.length / (width * height);
         if (![1, 3, 4].includes(channels)) {
-            throw new Error(messages.FRAME_INVALID(`unexpected channels=${channels} (raw bytes=${data.length}, ${width}x${height})`));
+            throw new Error(
+                messages.FRAME_INVALID(`unexpected channels=${channels} (raw bytes=${data.length}, ${width}x${height})`)
+            );
         }
         return sharp(data, {
             raw: { width, height, channels },
@@ -279,19 +286,26 @@ class NodeAvFrameSource {
      * Close the session, freeing libav handles. Logs (not throws)
      * cleanup errors so a leaked-handle bug is visible without
      * masking the original failure that led us here.
-     *
      * @returns {Promise<void>}
      */
     async close() {
-        if (this._closed) return;
+        if (this._closed) {
+            return;
+        }
         this._closed = true;
         const { log } = require("../../../src/util");
         const safeClose = async (obj, label) => {
-            if (!obj) return;
+            if (!obj) {
+                return;
+            }
             try {
-                if (typeof obj.close === "function") await obj.close();
-                else if (typeof obj.destroy === "function") obj.destroy();
-                else if (typeof obj.end === "function") obj.end();
+                if (typeof obj.close === "function") {
+                    await obj.close();
+                } else if (typeof obj.destroy === "function") {
+                    obj.destroy();
+                } else if (typeof obj.end === "function") {
+                    obj.end();
+                }
             } catch (e) {
                 log.warn("rtsp", `${label} close failed: ${e.message}`);
             }
@@ -308,24 +322,34 @@ class NodeAvFrameSource {
      * seconds. Used by the Test button to warn users when the
      * keyframe cadence is too sparse for their monitor interval
      * (UI-011).
-     *
      * @returns {Promise<number|null>} Keyframe interval in seconds
      */
     async getKeyframeInterval() {
-        if (!this.demuxer) return null;
+        if (!this.demuxer) {
+            return null;
+        }
         try {
-            const streams = this.demuxer.streams
-                || (typeof this.demuxer.getStreams === "function" ? await this.demuxer.getStreams() : null);
-            if (!streams) return null;
+            const streams =
+                this.demuxer.streams ||
+                (typeof this.demuxer.getStreams === "function" ? await this.demuxer.getStreams() : null);
+            if (!streams) {
+                return null;
+            }
             const video = Array.isArray(streams)
                 ? streams.find((s) => s.codecType === "video" || s.type === "video")
                 : null;
-            if (!video) return null;
+            if (!video) {
+                return null;
+            }
             if (video.gop_size && video.frame_rate) {
                 const fps = typeof video.frame_rate === "number" ? video.frame_rate : Number(video.frame_rate);
-                if (fps > 0) return video.gop_size / fps;
+                if (fps > 0) {
+                    return video.gop_size / fps;
+                }
             }
-            if (typeof video.keyframe_interval === "number") return video.keyframe_interval;
+            if (typeof video.keyframe_interval === "number") {
+                return video.keyframe_interval;
+            }
         } catch {
             /* ignored */
         }

@@ -9,7 +9,6 @@ const { parseRtspResponse, classifyRtspStatus } = require("../../../server/monit
  * Spin up an in-process TCP server that handles a single connection
  * with a canned RTSP response. Returns the server and its assigned
  * port number.
- *
  * @param {(socket: net.Socket) => void} handler Connection handler
  * @returns {Promise<{server: net.Server, port: number}>}
  */
@@ -28,7 +27,6 @@ async function makeRtspServer(handler) {
 /**
  * Build a minimal monitor object that satisfies what
  * `RtspMonitorType.check()` needs to read.
- *
  * @param {object} overrides Property overrides
  * @returns {object} Stub monitor
  */
@@ -68,7 +66,7 @@ describe("RTSP basic-probe — RTSP responses", () => {
     test("UP on RTSP/1.0 401 (Hikvision pattern)", async () => {
         const { server, port } = await makeRtspServer((socket) => {
             socket.once("data", () => {
-                socket.write("RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\nWWW-Authenticate: Digest realm=\"Login\"\r\n\r\n");
+                socket.write('RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\nWWW-Authenticate: Digest realm="Login"\r\n\r\n');
                 socket.end();
             });
         });

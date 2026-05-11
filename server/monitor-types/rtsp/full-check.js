@@ -1,12 +1,7 @@
 const { UP, log } = require("../../../src/util");
 const { messages } = require("./messages");
 const { NodeAvFrameSource } = require("./frame-source");
-const {
-    validateJpegStructure,
-    fingerprint,
-    distance,
-    FP_TOTAL_BITS,
-} = require("./image-pipeline");
+const { validateJpegStructure, fingerprint, distance, FP_TOTAL_BITS } = require("./image-pipeline");
 const { persistFrameImage } = require("./reference-store");
 
 const DEFAULT_THRESHOLD = 24;
@@ -14,7 +9,6 @@ const DEFAULT_THRESHOLD = 24;
 /**
  * Full-mode entry point: capture one frame, fingerprint, compare
  * against the Day/Night references. See HLDS §5.7 and FR-015/FR-016.
- *
  * @param {object} monitor Monitor row
  * @param {object} heartbeat Heartbeat to populate
  * @param {object} ctx Preflight context
@@ -42,13 +36,17 @@ async function run(monitor, heartbeat, ctx) {
         // budget (MR13 / OP-003).
         for (let attempts = 0; attempts < 5; attempts++) {
             const remaining = ctx.budgetMs - (Date.now() - startMs);
-            if (remaining <= 0) break;
+            if (remaining <= 0) {
+                break;
+            }
             try {
                 frame = await source.next(remaining);
             } catch (e) {
                 throw new Error(messages.DECODE_FAILED(e.message || String(e)));
             }
-            if (frame === null) break;
+            if (frame === null) {
+                break;
+            }
             try {
                 jpeg = await source.toJpeg(frame);
                 await validateJpegStructure(jpeg);
@@ -63,45 +61,39 @@ async function run(monitor, heartbeat, ctx) {
             throw new Error(messages.NO_FRAME());
         }
     } finally {
-        if (source) await source.close();
+        if (source) {
+            await source.close();
+        }
     }
 
     const live = await fingerprint(jpeg);
 
     const thresholdRaw = parseInt(monitor.stream_match_threshold, 10);
     const threshold = Number.isFinite(thresholdRaw) ? thresholdRaw : DEFAULT_THRESHOLD;
-    const dayHash = monitor.stream_reference_day_hash
-        ? Buffer.from(monitor.stream_reference_day_hash)
-        : null;
-    const nightHash = monitor.stream_reference_night_hash
-        ? Buffer.from(monitor.stream_reference_night_hash)
-        : null;
+    const dayHash = monitor.stream_reference_day_hash ? Buffer.from(monitor.stream_reference_day_hash) : null;
+    const nightHash = monitor.stream_reference_night_hash ? Buffer.from(monitor.stream_reference_night_hash) : null;
     const separate = monitor.stream_separate_day_night !== false && monitor.stream_separate_day_night !== 0;
 
-    if (!dayHash && !nightHash) {
+    if (separate && (!dayHash || !nightHash)) {
+        throw new Error(messages.MISSING_REFERENCE());
+    }
+    if (!separate && !dayHash) {
         throw new Error(messages.MISSING_REFERENCE());
     }
 
     let scoreDay = null;
     let scoreNight = null;
     let matchedSlot = null;
-    if (separate && dayHash && nightHash) {
+    if (separate) {
         scoreDay = distance(live, dayHash, "day");
         scoreNight = distance(live, nightHash, "night");
         matchedSlot = scoreNight < scoreDay ? "Night" : "Day";
-    } else if (dayHash) {
-        // single-reference path (or only Day provided)
-        scoreDay = distance(live, dayHash, separate ? "day" : "single");
-        matchedSlot = separate ? "Day" : "single";
-    } else if (nightHash) {
-        scoreNight = distance(live, nightHash, separate ? "night" : "single");
-        matchedSlot = separate ? "Night" : "single";
+    } else {
+        scoreDay = distance(live, dayHash, "single");
+        matchedSlot = "single";
     }
 
-    const best =
-        scoreNight !== null && (scoreDay === null || scoreNight < scoreDay)
-            ? scoreNight
-            : scoreDay;
+    const best = scoreNight !== null && (scoreDay === null || scoreNight < scoreDay) ? scoreNight : scoreDay;
 
     heartbeat.ping = Date.now() - startMs;
     if (keyframeIntervalSec != null) {

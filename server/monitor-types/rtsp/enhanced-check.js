@@ -14,7 +14,6 @@ const MIN_VALID_FRAMES = 2;
  * Uses SHA-256 truncated to 16 bytes. xxhash64 would be marginally
  * faster but adds a dependency (NFR-034). SHA-256 of a 200 KB JPEG
  * is ~1 ms on a modern CPU — well below the per-frame budget.
- *
  * @param {Buffer} buf JPEG bytes
  * @returns {string} Hex hash
  */
@@ -25,7 +24,6 @@ function fastHash(buf) {
 /**
  * Enhanced-mode entry point: capture N frames, validate structure,
  * detect frozen / black streams. See HLDS §5.6 and FR-013 / FR-014.
- *
  * @param {object} monitor Monitor row
  * @param {object} heartbeat Heartbeat to populate
  * @param {object} ctx Preflight context
@@ -54,16 +52,22 @@ async function run(monitor, heartbeat, ctx) {
             // MR13 / OP-003: enforce the wall-clock budget as a hard
             // stop per frame, not just between frames.
             const remaining = ctx.budgetMs - (Date.now() - startMs);
-            if (remaining <= 0) break;
+            if (remaining <= 0) {
+                break;
+            }
             let frame;
             try {
                 frame = await source.next(remaining);
             } catch (e) {
-                if (buffers.length === 0) throw e;
+                if (buffers.length === 0) {
+                    throw e;
+                }
                 log.debug("rtsp", `enhanced: read error after ${buffers.length} frames: ${e.message}`);
                 break;
             }
-            if (frame === null) break;
+            if (frame === null) {
+                break;
+            }
 
             let jpeg;
             try {
@@ -84,7 +88,9 @@ async function run(monitor, heartbeat, ctx) {
             hashes.push(fastHash(jpeg));
         }
     } finally {
-        if (source) await source.close();
+        if (source) {
+            await source.close();
+        }
     }
 
     if (buffers.length < MIN_VALID_FRAMES) {
@@ -102,10 +108,7 @@ async function run(monitor, heartbeat, ctx) {
     const stats = await luminanceStats(buffers[buffers.length - 1]);
     const meanRounded = Math.round(stats.mean * 10) / 10;
     const stddevRounded = Math.round(stats.stddev * 10) / 10;
-    if (
-        stats.mean < BLACK_FRAME_MEAN_THRESHOLD &&
-        stats.stddev < BLACK_FRAME_STDDEV_THRESHOLD
-    ) {
+    if (stats.mean < BLACK_FRAME_MEAN_THRESHOLD && stats.stddev < BLACK_FRAME_STDDEV_THRESHOLD) {
         throw new Error(messages.BLACK_FRAME({ mean: meanRounded, stddev: stddevRounded }));
     }
 

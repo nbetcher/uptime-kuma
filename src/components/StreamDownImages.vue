@@ -9,7 +9,11 @@
         <div v-else class="row g-3">
             <div v-for="img in images" :key="img.id" class="col-6 col-md-4 col-lg-3">
                 <figure class="m-0">
-                    <img :src="`data:image/jpeg;base64,${img.dataBase64}`" alt="" class="img-fluid rounded" />
+                    <img
+                        :src="`data:image/jpeg;base64,${img.dataBase64}`"
+                        :alt="downImageAlt(img)"
+                        class="img-fluid rounded"
+                    />
                     <figcaption class="form-text">{{ formatTimestamp(img.capturedAt) }}</figcaption>
                 </figure>
             </div>
@@ -51,22 +55,31 @@ export default {
         // Reload when the monitor changes or the user toggles the
         // opt-in (saves the form).
         "monitor.id"() {
-            if (this.visible) this.reload();
+            if (this.visible) {
+                this.reload();
+            }
         },
         "monitor.streamKeepDownImages"(v) {
-            if (v) this.reload();
-            else this.images = [];
+            if (v) {
+                this.reload();
+            } else {
+                this.images = [];
+            }
         },
     },
 
     mounted() {
-        if (this.visible) this.reload();
+        if (this.visible) {
+            this.reload();
+        }
     },
 
     methods: {
         reload() {
             const socket = this.$root.socket;
-            if (!socket) return;
+            if (!socket) {
+                return;
+            }
             this.loading = true;
             this.error = "";
             socket.emit("rtsp:listDownImages", this.monitor.id, (res) => {
@@ -79,12 +92,17 @@ export default {
             });
         },
         formatTimestamp(iso) {
-            if (!iso) return "";
+            if (!iso) {
+                return "";
+            }
             try {
                 return new Date(iso).toLocaleString();
             } catch {
                 return iso;
             }
+        },
+        downImageAlt(img) {
+            return this.$t("RTSP DOWN Frame Alt", [this.formatTimestamp(img.capturedAt)]);
         },
     },
 };

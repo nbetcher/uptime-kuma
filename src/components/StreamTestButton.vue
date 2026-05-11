@@ -48,7 +48,9 @@ export default {
         keyframeWarning(w) {
             // The server returns a structured warning (key + args)
             // so the operator-facing text can be localised here.
-            if (!w || !w.key) return "";
+            if (!w || !w.key) {
+                return "";
+            }
             return this.$t(w.key, w.args || []);
         },
 

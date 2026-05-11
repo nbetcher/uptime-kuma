@@ -11,7 +11,6 @@ const RTMP_HANDSHAKE_BYTES = 1537;
 /**
  * Open a socket (TCP or TLS). Resolves on `connect` / `secureConnect`,
  * rejects on error or timeout.
- *
  * @param {object} ctx Preflight context
  * @returns {Promise<net.Socket>} Connected socket
  */
@@ -27,10 +26,14 @@ function openSocket(ctx) {
         let settled = false;
 
         const done = (err, sock) => {
-            if (settled) return;
+            if (settled) {
+                return;
+            }
             settled = true;
             if (err) {
-                if (socket && !socket.destroyed) socket.destroy();
+                if (socket && !socket.destroyed) {
+                    socket.destroy();
+                }
                 reject(err);
             } else {
                 resolve(sock);
@@ -87,7 +90,6 @@ function openSocket(ctx) {
  * Read up to `maxBytes` from a socket, optionally stopping early when
  * `\r\n\r\n` is seen (RTSP head terminator). Closes the socket when
  * done.
- *
  * @param {net.Socket} socket Open socket
  * @param {number} maxBytes Maximum bytes to read
  * @param {number} timeoutMs Read timeout
@@ -99,23 +101,32 @@ function readBytes(socket, maxBytes, timeoutMs, stopOnDoubleCrlf) {
         const chunks = [];
         let total = 0;
         let settled = false;
+        let timer;
+        let onData;
+        let onEnd;
+        let onError;
 
         const done = (err, buf) => {
-            if (settled) return;
+            if (settled) {
+                return;
+            }
             settled = true;
             clearTimeout(timer);
-            socket.removeAllListeners("data");
-            socket.removeAllListeners("end");
-            socket.removeAllListeners("error");
-            if (err) reject(err);
-            else resolve(buf);
+            socket.removeListener("data", onData);
+            socket.removeListener("end", onEnd);
+            socket.removeListener("error", onError);
+            if (err) {
+                reject(err);
+            } else {
+                resolve(buf);
+            }
         };
 
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
             done(new Error(messages.CONNECTION_TIMEOUT(timeoutMs)));
         }, timeoutMs);
 
-        socket.on("data", (chunk) => {
+        onData = (chunk) => {
             chunks.push(chunk);
             total += chunk.length;
             if (total >= maxBytes) {
@@ -128,20 +139,58 @@ function readBytes(socket, maxBytes, timeoutMs, stopOnDoubleCrlf) {
                     done(null, joined);
                 }
             }
-        });
-        socket.on("end", () => {
+        };
+        onEnd = () => {
             done(null, Buffer.concat(chunks));
-        });
-        socket.on("error", (err) => {
+        };
+        onError = (err) => {
             done(err);
-        });
+        };
+        socket.on("data", onData);
+        socket.on("end", onEnd);
+        socket.on("error", onError);
+    });
+}
+
+/**
+ * Write all bytes to a socket and destroy it immediately on write
+ * failure, including synchronous write errors.
+ * @param {net.Socket} socket Open socket
+ * @param {string|Buffer} data Request bytes
+ * @param {BufferEncoding|null} encoding Optional string encoding
+ * @returns {Promise<void>}
+ */
+function writeSocket(socket, data, encoding = null) {
+    return new Promise((resolve, reject) => {
+        const onWrite = (err) => {
+            if (err) {
+                if (!socket.destroyed) {
+                    socket.destroy();
+                }
+                reject(err);
+                return;
+            }
+            resolve();
+        };
+
+        try {
+            if (encoding) {
+                socket.write(data, encoding, onWrite);
+            } else {
+                socket.write(data, onWrite);
+            }
+        } catch (err) {
+            if (!socket.destroyed) {
+                socket.destroy();
+            }
+            reject(err);
+        }
     });
 }
 
 /**
  * Parse an RTSP response into status code + CSeq, and assert the
  * response shape per HLDS §5.5 step 4.
- *
  * @param {Buffer} buf Raw response bytes
  * @param {number} requestCSeq The CSeq value sent in the request
  * @returns {{ statusCode: number }} Parsed status code
@@ -180,22 +229,28 @@ function parseRtspResponse(buf, requestCSeq) {
  * 02-protocol-coverage.md §5: any response with `RTSP/` prefix + echoed
  * CSeq proves liveness, so all status codes from an RTSP-speaking
  * server are UP — most cleanly, some with a warning surface.
- *
  * @param {number} code RTSP status code
  * @returns {{ msg: string }} Heartbeat msg
  */
 function classifyRtspStatus(code) {
-    if (code >= 200 && code < 300) return { msg: messages.RTSP_OK(code) };
-    if ([401, 403, 404, 405].includes(code)) return { msg: messages.RTSP_OK(code) };
-    if (code >= 300 && code < 400) return { msg: messages.RTSP_REDIRECT(code) };
-    if (code >= 500 && code < 600) return { msg: messages.RTSP_SERVER_ERROR(code) };
+    if (code >= 200 && code < 300) {
+        return { msg: messages.RTSP_OK(code) };
+    }
+    if ([401, 403, 404, 405].includes(code)) {
+        return { msg: messages.RTSP_OK(code) };
+    }
+    if (code >= 300 && code < 400) {
+        return { msg: messages.RTSP_REDIRECT(code) };
+    }
+    if (code >= 500 && code < 600) {
+        return { msg: messages.RTSP_SERVER_ERROR(code) };
+    }
     // Other 4xx — still RTSP-speaking, surface as server-error warning
     return { msg: messages.RTSP_SERVER_ERROR(code) };
 }
 
 /**
  * Basic-mode probe for RTSP/RTSPS: open socket, send OPTIONS, parse.
- *
  * @param {object} monitor Monitor row
  * @param {object} heartbeat Heartbeat to populate
  * @param {object} ctx Preflight context
@@ -209,15 +264,12 @@ async function probeRtsp(monitor, heartbeat, ctx) {
     const socket = await openSocket(ctx);
     let rawResponse;
     try {
-        await new Promise((resolve, reject) => {
-            socket.write(requestLine, "utf8", (err) => {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
+        await writeSocket(socket, requestLine, "utf8");
         rawResponse = await readBytes(socket, MAX_RESPONSE_BYTES, ctx.timeoutMs, true);
     } finally {
-        if (!socket.destroyed) socket.end();
+        if (!socket.destroyed) {
+            socket.destroy();
+        }
     }
 
     const { statusCode } = parseRtspResponse(rawResponse, cseq);
@@ -242,7 +294,6 @@ async function probeRtsp(monitor, heartbeat, ctx) {
  * read S0+S1, verify the version byte. C2 is intentionally not sent —
  * S0+S1 prove the server is RTMP-speaking, and Basic doesn't need to
  * proceed further. Per HLDS §5.5 / 02-protocol-coverage.md §5.
- *
  * @param {object} monitor Monitor row
  * @param {object} heartbeat Heartbeat to populate
  * @param {object} ctx Preflight context
@@ -260,15 +311,12 @@ async function probeRtmp(monitor, heartbeat, ctx) {
     const socket = await openSocket(ctx);
     let s0s1;
     try {
-        await new Promise((resolve, reject) => {
-            socket.write(c0c1, (err) => {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
+        await writeSocket(socket, c0c1);
         s0s1 = await readBytes(socket, RTMP_HANDSHAKE_BYTES, ctx.timeoutMs, false);
     } finally {
-        if (!socket.destroyed) socket.end();
+        if (!socket.destroyed) {
+            socket.destroy();
+        }
     }
 
     if (!s0s1 || s0s1.length < 1 || s0s1[0] !== 0x03) {
@@ -296,7 +344,6 @@ async function probeRtmp(monitor, heartbeat, ctx) {
 
 /**
  * Basic-mode entry point. Dispatches by protocol.
- *
  * @param {object} monitor Monitor row
  * @param {object} heartbeat Heartbeat to populate
  * @param {object} ctx Preflight context
@@ -319,4 +366,5 @@ module.exports = {
     probeRtmp,
     parseRtspResponse,
     classifyRtspStatus,
+    writeSocket,
 };

@@ -8,7 +8,6 @@ const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 /**
  * Load the monitor row and assert (a) it exists, (b) it is an RTSP
  * monitor, (c) the calling socket's user owns it.
- *
  * @param {object} socket Socket.io socket (must have userID)
  * @param {number} monitorId Monitor id
  * @returns {Promise<object>} The bean
@@ -39,13 +38,34 @@ async function loadMonitorOrThrow(socket, monitorId) {
  * @returns {string|null}
  */
 function monitorHostname(bean) {
-    if (bean.hostname) return bean.hostname;
-    if (!bean.url) return null;
+    if (bean.hostname) {
+        return bean.hostname;
+    }
+    if (!bean.url) {
+        return null;
+    }
     try {
         return new URL(bean.url).hostname;
     } catch {
         return null;
     }
+}
+
+/**
+ * Decode the hex fingerprint carried by the edit form into the Buffer
+ * shape Full mode expects from a DB bean.
+ * @param {string|null} hash Hex fingerprint from Monitor.toJSON()
+ * @returns {Buffer|null} Decoded hash or null
+ */
+function decodeReferenceHash(hash) {
+    if (!hash || typeof hash !== "string") {
+        return null;
+    }
+    const trimmed = hash.trim();
+    if (!/^[0-9a-f]{32}$/i.test(trimmed)) {
+        return null;
+    }
+    return Buffer.from(trimmed, "hex");
 }
 
 /**
@@ -69,8 +89,8 @@ function buildEphemeralMonitor(formMonitor) {
         stream_separate_day_night: formMonitor.streamSeparateDayNight,
         stream_status_thumbnail: false,
         stream_keep_down_images: false,
-        stream_reference_day_hash: null,
-        stream_reference_night_hash: null,
+        stream_reference_day_hash: decodeReferenceHash(formMonitor.streamReferenceDayHash),
+        stream_reference_night_hash: decodeReferenceHash(formMonitor.streamReferenceNightHash),
         timeout: formMonitor.timeout || 10,
         interval: formMonitor.interval || 60,
         getIgnoreTls: () => Boolean(formMonitor.ignoreTls),
@@ -83,12 +103,11 @@ function buildEphemeralMonitor(formMonitor) {
  * Register the stream-monitor socket handlers on a socket.
  *
  * Events:
- *   - rtsp:uploadReference(monitorId, slot, { data?, url? }, cb)
- *   - rtsp:getReference(monitorId, slot, cb) — returns base64
- *   - rtsp:refreshReference(monitorId, slot, cb)
- *   - rtsp:deleteReference(monitorId, slot, cb)
- *   - rtsp:testStream(formMonitor, cb)
- *
+ * - rtsp:uploadReference(monitorId, slot, { data?, url? }, cb)
+ * - rtsp:getReference(monitorId, slot, cb) — returns base64
+ * - rtsp:refreshReference(monitorId, slot, cb)
+ * - rtsp:deleteReference(monitorId, slot, cb)
+ * - rtsp:testStream(formMonitor, cb)
  * @param {object} socket socket.io socket
  * @returns {void}
  */
@@ -96,7 +115,9 @@ module.exports.rtspSocketHandler = function (socket) {
     socket.on("rtsp:uploadReference", async (monitorId, slot, payload, callback) => {
         try {
             checkLogin(socket);
-            if (!VALID_SLOTS.includes(slot)) throw new Error(`invalid slot: ${slot}`);
+            if (!VALID_SLOTS.includes(slot)) {
+                throw new Error(`invalid slot: ${slot}`);
+            }
             const bean = await loadMonitorOrThrow(socket, parseInt(monitorId, 10));
             const refStore = require("../monitor-types/rtsp/reference-store");
 
@@ -117,7 +138,9 @@ module.exports.rtspSocketHandler = function (socket) {
                 } catch (e) {
                     throw new Error(`invalid base64: ${e.message}`);
                 }
-                if (bytes.length === 0) throw new Error("empty upload");
+                if (bytes.length === 0) {
+                    throw new Error("empty upload");
+                }
                 if (bytes.length > MAX_UPLOAD_BYTES) {
                     throw new Error(`upload exceeds ${MAX_UPLOAD_BYTES} bytes`);
                 }
@@ -140,7 +163,9 @@ module.exports.rtspSocketHandler = function (socket) {
     socket.on("rtsp:getReference", async (monitorId, slot, callback) => {
         try {
             checkLogin(socket);
-            if (!VALID_SLOTS.includes(slot)) throw new Error(`invalid slot: ${slot}`);
+            if (!VALID_SLOTS.includes(slot)) {
+                throw new Error(`invalid slot: ${slot}`);
+            }
             const bean = await loadMonitorOrThrow(socket, parseInt(monitorId, 10));
             const refStore = require("../monitor-types/rtsp/reference-store");
             const buf = await refStore.getBlob({ monitorId: bean.id, slot });
@@ -164,7 +189,9 @@ module.exports.rtspSocketHandler = function (socket) {
     socket.on("rtsp:refreshReference", async (monitorId, slot, callback) => {
         try {
             checkLogin(socket);
-            if (!VALID_SLOTS.includes(slot)) throw new Error(`invalid slot: ${slot}`);
+            if (!VALID_SLOTS.includes(slot)) {
+                throw new Error(`invalid slot: ${slot}`);
+            }
             const bean = await loadMonitorOrThrow(socket, parseInt(monitorId, 10));
             const refStore = require("../monitor-types/rtsp/reference-store");
             const result = await refStore.refreshUrl({
@@ -210,7 +237,9 @@ module.exports.rtspSocketHandler = function (socket) {
     socket.on("rtsp:deleteReference", async (monitorId, slot, callback) => {
         try {
             checkLogin(socket);
-            if (!VALID_SLOTS.includes(slot)) throw new Error(`invalid slot: ${slot}`);
+            if (!VALID_SLOTS.includes(slot)) {
+                throw new Error(`invalid slot: ${slot}`);
+            }
             const bean = await loadMonitorOrThrow(socket, parseInt(monitorId, 10));
             const refStore = require("../monitor-types/rtsp/reference-store");
             await refStore.deleteSlot({

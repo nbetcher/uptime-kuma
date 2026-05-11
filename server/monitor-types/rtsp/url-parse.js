@@ -9,6 +9,16 @@ const DEFAULT_PORTS = {
 };
 
 /**
+ * Remove URL userinfo before a user-provided URL is included in an
+ * operator-facing error message.
+ * @param {unknown} value Raw URL-ish value
+ * @returns {string} URL string with credentials scrubbed
+ */
+function scrubUrlCredentialsForLog(value) {
+    return String(value).replace(/^([a-z][a-z0-9+\-.]*:\/\/)(?:[^/?#\s@]*@)+/i, "$1***@");
+}
+
+/**
  * Compute the wall-clock budget for an Enhanced/Full check.
  *
  * Per NFR-002: `budget = clamp(interval / 3, 5, 30)` seconds. The
@@ -51,10 +61,7 @@ async function preflight(monitor) {
         // NFR-020: scrub any `user[:pass]@` portion from the input
         // before echoing it back. Catches both `user:pass@host` and
         // `user@host` shapes since either may carry sensitive data.
-        const scrubbed = String(monitor.url).replace(
-            /(\b\w+):\/\/[^@/\s]+@/,
-            "$1://***@"
-        );
+        const scrubbed = scrubUrlCredentialsForLog(monitor.url);
         throw new Error(messages.INVALID_URL(`${e.message} (input: ${scrubbed.substring(0, 80)})`));
     }
 
@@ -74,16 +81,19 @@ async function preflight(monitor) {
 
     // Credentials precedence (FR-030 / HLDS §5.4 step 4):
     //   form-supplied basic_auth_user/basic_auth_pass win;
-    //   URL-embedded credentials are stripped and only used as
-    //   fallback when the form fields are empty.
+    //   URL-embedded credentials are fallback when form fields are
+    //   empty.
+    //
+    // For RTSP/RTSPS we strip userinfo from ctx.url and pass creds via
+    // protocol-specific open options.
+    // For RTMP/RTMPS node-av expects userinfo on the URL itself, so we
+    // keep userinfo and ensure form credentials overwrite URL creds.
     let username = monitor.basic_auth_user || "";
     let password = monitor.basic_auth_pass || "";
+    const hadUrlCredentials = Boolean(url.username || url.password);
     if (url.username || url.password) {
         if (username || password) {
-            log.warn(
-                "rtsp",
-                `URL credentials shadowed by form fields on monitor ${monitor.id}`
-            );
+            log.warn("rtsp", `URL credentials shadowed by form fields on monitor ${monitor.id}`);
         } else {
             // URL class returns percent-encoded values
             try {
@@ -94,18 +104,23 @@ async function preflight(monitor) {
                 password = url.password;
             }
         }
-        url.username = "";
-        url.password = "";
+    }
+
+    if (proto === "rtsp" || proto === "rtsps") {
+        if (hadUrlCredentials) {
+            url.username = "";
+            url.password = "";
+        }
+    } else if (username || password) {
+        url.username = username;
+        url.password = password;
     }
 
     // UI-007: ?rtsp_transport= URL parameter is ignored; the dedicated
     // transport selector is canonical. The UI shows a warning; we
     // strip the parameter on the server too as defence-in-depth.
     if (url.searchParams.has("rtsp_transport")) {
-        log.warn(
-            "rtsp",
-            `?rtsp_transport= in URL ignored on monitor ${monitor.id}`
-        );
+        log.warn("rtsp", `?rtsp_transport= in URL ignored on monitor ${monitor.id}`);
         url.searchParams.delete("rtsp_transport");
     }
 
@@ -137,7 +152,9 @@ async function preflight(monitor) {
  * @returns {boolean} True if rtsp_transport parameter present
  */
 function urlContainsRtspTransport(urlStr) {
-    if (!urlStr || typeof urlStr !== "string") return false;
+    if (!urlStr || typeof urlStr !== "string") {
+        return false;
+    }
     try {
         const u = new URL(urlStr);
         return u.searchParams.has("rtsp_transport");
@@ -150,5 +167,6 @@ module.exports = {
     DEFAULT_PORTS,
     computeBudget,
     preflight,
+    scrubUrlCredentialsForLog,
     urlContainsRtspTransport,
 };

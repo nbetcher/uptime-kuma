@@ -5,7 +5,6 @@ const { log } = require("../../../src/util");
 /**
  * Write an audit record for a reference-image action. Per OP-007 /
  * HLDS §3.4 / §5.11.
- *
  * @param {object} args Audit fields
  * @param {number} args.monitorId Monitor ID
  * @param {string} args.slot 'day' | 'night' | 'single'

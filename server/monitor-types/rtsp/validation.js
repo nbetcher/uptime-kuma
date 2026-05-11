@@ -23,13 +23,14 @@ const VALID_MODES = ["basic", "enhanced", "full"];
  * as a DOWN heartbeat (matches NFR-010's "every plausible failure mode
  * is reported as a DOWN heartbeat"). FR-019b is enforced on
  * `editMonitor` where `bean` is populated.
- *
  * @param {object} monitor Incoming monitor JSON
  * @param {object} bean DB bean (null on add, populated on edit)
  * @returns {void}
  */
 function validateStreamMonitor(monitor, bean) {
-    if (monitor.type !== "rtsp") return;
+    if (monitor.type !== "rtsp") {
+        return;
+    }
 
     if (!monitor.url) {
         throw new Error("RTSP/RTMP monitors require a URL");
@@ -113,7 +114,6 @@ function validateStreamMonitor(monitor, bean) {
  * Reference BLOB columns are managed by the reference-upload socket
  * handler, NOT by this helper — leaving them out of the form-save
  * path prevents accidental clobber on edit.
- *
  * @param {object} bean Monitor bean to mutate
  * @param {object} monitor Form payload
  * @returns {void}

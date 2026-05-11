@@ -19,11 +19,11 @@ for (let i = 0; i < 256; i++) {
     POPCOUNT_8[i] = c;
 }
 
-const FP_HASH_BYTES = 8;            // 64 bits each for lum + edge
+const FP_HASH_BYTES = 8; // 64 bits each for lum + edge
 const FP_TOTAL_BYTES = FP_HASH_BYTES * 2;
 const FP_TOTAL_BITS = FP_TOTAL_BYTES * 8;
 
-const MIN_JPEG_SIZE = 1024;
+const MIN_JPEG_SIZE = 128;
 const MAX_JPEG_SIZE = 5 * 1024 * 1024;
 const MIN_DIM = 64;
 const MAX_DIM = 16384;
@@ -36,7 +36,6 @@ const SOBEL_X_KERNEL = {
 
 /**
  * Validate the JPEG structural shape of a decoded frame.
- *
  * @param {Buffer} buf JPEG bytes
  * @returns {Promise<{width: number, height: number}>}
  */
@@ -75,8 +74,7 @@ async function validateJpegStructure(buf) {
  * Compute the 64-bit difference hash of a small raw greyscale buffer.
  *
  * For each row, produces 8 bits comparing pixel[col] > pixel[col+1]
- * across cols 0..6 — 8 rows × 8 bits = 64 bits = 8 bytes.
- *
+ * across cols 0..7 — 8 rows × 8 bits = 64 bits = 8 bytes.
  * @param {Buffer} pixels Raw greyscale buffer, row-major
  * @param {number} w Width
  * @param {number} h Height
@@ -89,7 +87,9 @@ function dHash(pixels, w, h) {
         for (let col = 0; col < w - 1 && col < 8; col++) {
             const left = pixels[row * w + col];
             const right = pixels[row * w + col + 1];
-            if (left > right) bits |= 1 << (7 - col);
+            if (left > right) {
+                bits |= 1 << (7 - col);
+            }
         }
         out[row] = bits;
     }
@@ -99,7 +99,6 @@ function dHash(pixels, w, h) {
 /**
  * Compute the 128-bit fingerprint of a JPEG buffer: 64-bit luminance
  * dHash + 64-bit edge dHash. See `docs/rtsp-monitor/05-image-comparison-strategy.md` §2.
- *
  * @param {Buffer} jpegBuf JPEG bytes (already structurally valid)
  * @returns {Promise<{lumHash: Buffer, edgeHash: Buffer, meanLuma: number}>}
  */
@@ -122,13 +121,11 @@ async function fingerprint(jpegBuf) {
         .toBuffer();
     const edgeHash = dHash(edgePixels, 9, 8);
 
-    const greyForStats = await sharp(jpegBuf)
-        .greyscale()
-        .resize(32, 32, { fit: "fill" })
-        .raw()
-        .toBuffer();
+    const greyForStats = await sharp(jpegBuf).greyscale().resize(32, 32, { fit: "fill" }).raw().toBuffer();
     let sum = 0;
-    for (let i = 0; i < greyForStats.length; i++) sum += greyForStats[i];
+    for (let i = 0; i < greyForStats.length; i++) {
+        sum += greyForStats[i];
+    }
     const meanLuma = greyForStats.length > 0 ? sum / greyForStats.length : 0;
 
     return { lumHash, edgeHash, meanLuma };
@@ -137,7 +134,6 @@ async function fingerprint(jpegBuf) {
 /**
  * Combine luminance + edge halves into a single 16-byte fingerprint
  * for storage in the `stream_reference_*_hash` column.
- *
  * @param {{lumHash: Buffer, edgeHash: Buffer}} fp Fingerprint
  * @returns {Buffer} 16-byte concatenation
  */
@@ -147,7 +143,6 @@ function packFingerprint(fp) {
 
 /**
  * Compute Hamming distance between two equal-length byte buffers.
- *
  * @param {Buffer} a First buffer
  * @param {Buffer} b Second buffer
  * @returns {number} Number of differing bits
@@ -169,7 +164,6 @@ function hammingDistance(a, b) {
  * for Day/Night-classified references — for the single-reference
  * case (`classification === 'single'`), no adjustment is applied
  * (HLDS §6.6).
- *
  * @param {{lumHash: Buffer, edgeHash: Buffer, meanLuma: number}} live Live fingerprint
  * @param {Buffer} refHash Packed reference hash (16 bytes)
  * @param {'day'|'night'|'single'} classification Reference classification
@@ -183,8 +177,12 @@ function distance(live, refHash, classification) {
     const edgeRef = refHash.subarray(FP_HASH_BYTES, FP_TOTAL_BYTES);
     let d = hammingDistance(live.lumHash, lumRef) + hammingDistance(live.edgeHash, edgeRef);
 
-    if (classification === "day" && live.meanLuma < 5) d = FP_TOTAL_BITS;
-    if (classification === "night" && live.meanLuma > 240) d = FP_TOTAL_BITS;
+    if (classification === "day" && live.meanLuma < 5) {
+        d = FP_TOTAL_BITS;
+    }
+    if (classification === "night" && live.meanLuma > 240) {
+        d = FP_TOTAL_BITS;
+    }
     // For 'single', no classification adjustment applies.
 
     return d;
@@ -193,19 +191,18 @@ function distance(live, refHash, classification) {
 /**
  * Compute simple greyscale luminance statistics on a 32×32 downsample
  * of a JPEG. Used by Enhanced mode's black/uniform-frame detection.
- *
  * @param {Buffer} jpegBuf JPEG bytes
  * @returns {Promise<{mean: number, stddev: number}>}
  */
 async function luminanceStats(jpegBuf) {
-    const grey = await sharp(jpegBuf)
-        .greyscale()
-        .resize(32, 32, { fit: "fill" })
-        .raw()
-        .toBuffer();
-    if (grey.length === 0) return { mean: 0, stddev: 0 };
+    const grey = await sharp(jpegBuf).greyscale().resize(32, 32, { fit: "fill" }).raw().toBuffer();
+    if (grey.length === 0) {
+        return { mean: 0, stddev: 0 };
+    }
     let sum = 0;
-    for (let i = 0; i < grey.length; i++) sum += grey[i];
+    for (let i = 0; i < grey.length; i++) {
+        sum += grey[i];
+    }
     const mean = sum / grey.length;
     let varSum = 0;
     for (let i = 0; i < grey.length; i++) {
@@ -219,11 +216,10 @@ async function luminanceStats(jpegBuf) {
 /**
  * Canonicalize an uploaded reference image: re-encode to a bounded
  * JPEG with all metadata stripped. Per UI-004 / NFR-023.
- *
  * @param {Buffer} inputBuf Source image bytes
- * @param {object} [opts] Override options
- * @param {number} [opts.maxDim=640] Max long-edge px
- * @param {number} [opts.quality=85] JPEG quality
+ * @param {object} opts Override options
+ * @param {number} opts.maxDim Max long-edge px
+ * @param {number} opts.quality JPEG quality
  * @returns {Promise<Buffer>} Canonicalised JPEG
  */
 async function canonicalize(inputBuf, opts = {}) {
