@@ -22,7 +22,7 @@ jobs:
       - name: Checkout master branch
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
-          ref: master
+          ref: rtsp-monitor
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
@@ -67,7 +67,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PR_EXISTS=$(gh pr list --base master --head npm-update --json number --jq 'length')
+          PR_EXISTS=$(gh pr list --base rtsp-monitor --head npm-update --json number --jq 'length')
           if [ "$PR_EXISTS" -eq "0" ]; then
             echo "pr_exists=false" >> $GITHUB_OUTPUT
           else
@@ -80,7 +80,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr create \
-            --base master \
+            --base rtsp-monitor \
             --head npm-update \
             --title "chore: Update dependencies" \
             --body ""

@@ -11,7 +11,7 @@ on: # zizmor: ignore[dangerous-triggers]
       - master
   pull_request_target:
     branches:
-      - master
+      - rtsp-monitor
     types: [synchronize]
 
 jobs:
