@@ -9,7 +9,6 @@ import {
     getRepoNames,
     checkReleaseBranch,
     createDistTarGz,
-    createReleasePR,
 } from "./lib.mjs";
 import semver from "semver";
 
@@ -49,8 +48,8 @@ await checkTagExists(repoNames, version);
 // node extra/beta/update-version.js
 await import("../beta/update-version.mjs");
 
-// Create Pull Request (gh pr create will handle pushing the branch)
-await createReleasePR(version, previousVersion, dryRun, branchName, githubRunId);
+// Create Pull Request (disabled for release builds)
+// await createReleasePR(version, previousVersion, dryRun, branchName, githubRunId);
 
 // Build frontend dist
 buildDist();
