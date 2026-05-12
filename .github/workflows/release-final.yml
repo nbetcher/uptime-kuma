@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: rtsp-monitor
+          ref: ${{ github.ref_name }}
           persist-credentials: true
           fetch-depth: 0 # Fetch all history for changelog generation
 
@@ -80,6 +80,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_PREVIOUS_VERSION: ${{ inputs.previous_version }}
+          RELEASE_BASE_BRANCH: ${{ github.ref_name }}
           DRY_RUN: ${{ inputs.dry_run }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_RUN_ID: ${{ github.run_id }}

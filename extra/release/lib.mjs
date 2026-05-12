@@ -305,9 +305,10 @@ export async function createDistTarGz() {
  * @param {boolean} dryRun Still create the PR, but add "[DRY RUN]" to the title
  * @param {string} branchName The branch name to use for the PR head (defaults to "release")
  * @param {string} githubRunId The GitHub Actions run ID for linking to artifacts
+ * @param {string} baseBranch The base branch for the release PR
  * @returns {Promise<void>}
  */
-export async function createReleasePR(version, previousVersion, dryRun, branchName = "release", githubRunId = null) {
+export async function createReleasePR(version, previousVersion, dryRun, branchName = "release", githubRunId = null, baseBranch = process.env.RELEASE_BASE_BRANCH || "master") {
     const prompt = await getPrompt(previousVersion);
 
     const title = dryRun ? `chore: update to ${version} (dry run)` : `chore: update to ${version}`;
@@ -355,7 +356,7 @@ The \`dist.tar.gz\` archive will be available as an artifact in the workflow run
         "--body",
         body,
         "--base",
-        "master",
+        baseBranch,
         "--head",
         branchName,
         "--draft",
