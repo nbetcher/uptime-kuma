@@ -37,4 +37,4 @@ jobs:
             @{fc-author} congrats on your first contribution to Uptime Kuma! 🐻
 
             We hope you enjoy contributing to our project and look forward to seeing more of your work in the future!
-            If you want to see your contribution in action, please see our [nightly builds here](https://hub.docker.com/layers/louislam/uptime-kuma/nightly2).
+            If you want to see your contribution in action, please see our [nightly builds here](https://hub.docker.com/layers/nbetcher/uptime-kuma/nightly2).

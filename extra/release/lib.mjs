@@ -208,7 +208,7 @@ export function uploadArtifacts(version, githubToken) {
         "--platform",
         "linux/amd64",
         "-t",
-        "louislam/uptime-kuma:upload-artifact",
+        "nbetcher/uptime-kuma:upload-artifact",
         "--build-arg",
         `VERSION=${version}`,
         "--build-arg",
@@ -314,8 +314,8 @@ export async function createReleasePR(version, previousVersion, dryRun, branchNa
 
     // Build the artifact link - use direct run link if available, otherwise link to workflow file
     const artifactLink = githubRunId
-        ? `https://github.com/louislam/uptime-kuma/actions/runs/${githubRunId}/workflow`
-        : `https://github.com/louislam/uptime-kuma/actions/workflows/beta-release.yml`;
+        ? `https://github.com/nbetcher/uptime-kuma/actions/runs/${githubRunId}/workflow`
+        : `https://github.com/nbetcher/uptime-kuma/actions/workflows/beta-release.yml`;
 
     const body = `## Release ${version}
 
