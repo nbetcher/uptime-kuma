@@ -33,7 +33,7 @@ export function getRepoNames() {
         // Split by comma
         return process.env.RELEASE_REPO_NAMES.split(",").map((name) => name.trim());
     }
-    return ["louislam/uptime-kuma", "ghcr.io/louislam/uptime-kuma"];
+    return ["nbetcher/uptime-kuma", "ghcr.io/nbetcher/uptime-kuma"];
 }
 
 /**
@@ -208,7 +208,7 @@ export function uploadArtifacts(version, githubToken) {
         "--platform",
         "linux/amd64",
         "-t",
-        "louislam/uptime-kuma:upload-artifact",
+        "nbetcher/uptime-kuma:upload-artifact",
         "--build-arg",
         `VERSION=${version}`,
         "--build-arg",
@@ -305,17 +305,31 @@ export async function createDistTarGz() {
  * @param {boolean} dryRun Still create the PR, but add "[DRY RUN]" to the title
  * @param {string} branchName The branch name to use for the PR head (defaults to "release")
  * @param {string} githubRunId The GitHub Actions run ID for linking to artifacts
+ * @param {string} baseBranch The base branch for the release PR
  * @returns {Promise<void>}
  */
-export async function createReleasePR(version, previousVersion, dryRun, branchName = "release", githubRunId = null) {
-    const prompt = await getPrompt(previousVersion);
+export async function createReleasePR(version, previousVersion, dryRun, branchName = "release", githubRunId = null, baseBranch = process.env.RELEASE_BASE_BRANCH || "master") {
+    let prompt = "";
+    let changelogCommand = `npm run generate-changelog ${previousVersion} generate 'JSON_MAPPING_BY_LLM_HERE'`;
+
+    try {
+        prompt = await getPrompt(previousVersion);
+    } catch (error) {
+        console.warn(`Skipping changelog prompt generation: ${error.message}`);
+        prompt = [
+            "Changelog prompt generation was skipped.",
+            `The previous release reference \`${previousVersion}\` does not exist in this repository.`,
+            "For a first fork-specific release, use any existing tag, branch, or commit as the changelog baseline if you want to generate one later.",
+        ].join("\n");
+        changelogCommand = "npm run generate-changelog <existing-tag-branch-or-commit> generate 'JSON_MAPPING_BY_LLM_HERE'";
+    }
 
     const title = dryRun ? `chore: update to ${version} (dry run)` : `chore: update to ${version}`;
 
     // Build the artifact link - use direct run link if available, otherwise link to workflow file
     const artifactLink = githubRunId
-        ? `https://github.com/louislam/uptime-kuma/actions/runs/${githubRunId}/workflow`
-        : `https://github.com/louislam/uptime-kuma/actions/workflows/beta-release.yml`;
+        ? `https://github.com/nbetcher/uptime-kuma/actions/runs/${githubRunId}/workflow`
+        : `https://github.com/nbetcher/uptime-kuma/actions/workflows/beta-release.yml`;
 
     const body = `## Release ${version}
 
@@ -339,7 +353,7 @@ ${prompt}
 Run the following command to generate the changelog with the categorized map from LLM:
 
 \`\`\`bash
-npm run generate-changelog ${previousVersion} generate 'JSON_MAPPING_BY_LLM_HERE'
+${changelogCommand}
 \`\`\`
 
 ### Release Artifacts
@@ -355,7 +369,7 @@ The \`dist.tar.gz\` archive will be available as an artifact in the workflow run
         "--body",
         body,
         "--base",
-        "master",
+        baseBranch,
         "--head",
         branchName,
         "--draft",
