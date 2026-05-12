@@ -309,7 +309,20 @@ export async function createDistTarGz() {
  * @returns {Promise<void>}
  */
 export async function createReleasePR(version, previousVersion, dryRun, branchName = "release", githubRunId = null, baseBranch = process.env.RELEASE_BASE_BRANCH || "master") {
-    const prompt = await getPrompt(previousVersion);
+    let prompt = "";
+    let changelogCommand = `npm run generate-changelog ${previousVersion} generate 'JSON_MAPPING_BY_LLM_HERE'`;
+
+    try {
+        prompt = await getPrompt(previousVersion);
+    } catch (error) {
+        console.warn(`Skipping changelog prompt generation: ${error.message}`);
+        prompt = [
+            "Changelog prompt generation was skipped.",
+            `The previous release reference \`${previousVersion}\` does not exist in this repository.`,
+            "For a first fork-specific release, use any existing tag, branch, or commit as the changelog baseline if you want to generate one later.",
+        ].join("\n");
+        changelogCommand = "npm run generate-changelog <existing-tag-branch-or-commit> generate 'JSON_MAPPING_BY_LLM_HERE'";
+    }
 
     const title = dryRun ? `chore: update to ${version} (dry run)` : `chore: update to ${version}`;
 
@@ -340,7 +353,7 @@ ${prompt}
 Run the following command to generate the changelog with the categorized map from LLM:
 
 \`\`\`bash
-npm run generate-changelog ${previousVersion} generate 'JSON_MAPPING_BY_LLM_HERE'
+${changelogCommand}
 \`\`\`
 
 ### Release Artifacts
