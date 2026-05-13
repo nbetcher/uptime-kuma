@@ -69,8 +69,8 @@ jobs:
           gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" > "${release_json}"
 
           tag_name="$(jq -r '.tag_name // empty' "${release_json}")"
-          draft="$(jq -r '.draft // true' "${release_json}")"
-          prerelease="$(jq -r '.prerelease // true' "${release_json}")"
+          draft="$(jq -r 'if .draft == false then "false" elif .draft == true then "true" else "true" end' "${release_json}")"
+          prerelease="$(jq -r 'if .prerelease == false then "false" elif .prerelease == true then "true" else "true" end' "${release_json}")"
           version="${tag_name#v}"
 
           if [ "${draft}" = "true" ] || [ "${prerelease}" = "true" ]; then
