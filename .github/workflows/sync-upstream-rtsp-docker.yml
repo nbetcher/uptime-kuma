@@ -1,0 +1,527 @@
+name: Sync Upstream RTSP Docker Image
+
+on:
+  schedule:
+    - cron: "45 5 * * 4"
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: "Rebuild and push downstream tags even when immutable tags already exist"
+        required: false
+        type: boolean
+        default: false
+      confirm_overwrite_tag:
+        description: "Required with force_publish; enter the exact immutable tag to overwrite"
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: sync-upstream-rtsp-docker
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: louislam/uptime-kuma
+  UPSTREAM_GIT_URL: https://github.com/louislam/uptime-kuma.git
+  DOWNSTREAM_IMAGE: nbetcher/uptime-kuma
+  RTSP_BRANCH: rtsp-monitor
+
+jobs:
+  prepare-rtsp-source:
+    if: github.repository == 'nbetcher/uptime-kuma'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    outputs:
+      publish: ${{ steps.publish_state.outputs.publish }}
+      repair_latest: ${{ steps.publish_state.outputs.repair_latest }}
+      merged: ${{ steps.merge.outputs.merged }}
+      downstream_tags: ${{ steps.docker_tags.outputs.downstream_tags }}
+      version_tag: ${{ steps.docker_tags.outputs.version_tag }}
+      latest_tag: ${{ steps.docker_tags.outputs.latest_tag }}
+      source_revision: ${{ steps.build_source.outputs.source_revision }}
+      sync_branch: ${{ steps.merge.outputs.sync_branch }}
+      upstream_tag: ${{ steps.release.outputs.upstream_tag }}
+
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: rtsp-monitor
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 20
+
+      - name: Resolve latest upstream stable release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          release_json="$(mktemp)"
+          gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" > "${release_json}"
+
+          tag_name="$(jq -r '.tag_name // empty' "${release_json}")"
+          draft="$(jq -r '.draft // true' "${release_json}")"
+          prerelease="$(jq -r '.prerelease // true' "${release_json}")"
+          version="${tag_name#v}"
+
+          if [ "${draft}" = "true" ] || [ "${prerelease}" = "true" ]; then
+            echo "::error::Latest upstream release ${tag_name:-unknown} is not a published stable release."
+            exit 1
+          fi
+
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Latest upstream release tag ${tag_name:-unknown} is not a plain stable semver tag."
+            exit 1
+          fi
+
+          echo "upstream_tag=${tag_name}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Determine downstream Docker tags
+        id: docker_tags
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          const fs = require("fs");
+
+          const releaseVersion = process.env.RELEASE_VERSION;
+          const dockerTagPattern = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
+          const versionTag = `${releaseVersion}-rtsp`;
+          const latestTag = "latest-rtsp";
+          const downstreamTags = [versionTag, latestTag];
+          const immutableTags = downstreamTags.filter((tag) => tag !== "latest-rtsp");
+
+          for (const tag of downstreamTags) {
+              if (!dockerTagPattern.test(tag)) {
+                  throw new Error(`Refusing to publish invalid Docker tag: ${tag}`);
+              }
+          }
+
+          console.log(`Publishing downstream tags: ${downstreamTags.join(", ")}`);
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `downstream_tags=${downstreamTags.join(",")}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `immutable_tags=${immutableTags.join(",")}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version_tag=${versionTag}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `latest_tag=${latestTag}\n`);
+          NODE
+
+      - name: Check downstream publish state
+        id: publish_state
+        env:
+          FORCE_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.force_publish }}
+          CONFIRM_OVERWRITE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm_overwrite_tag || '' }}
+          IMMUTABLE_TAGS: ${{ steps.docker_tags.outputs.immutable_tags }}
+          VERSION_TAG: ${{ steps.docker_tags.outputs.version_tag }}
+          LATEST_TAG: ${{ steps.docker_tags.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          const fs = require("fs");
+
+          const immutableTags = (process.env.IMMUTABLE_TAGS || "")
+              .split(",")
+              .map((tag) => tag.trim())
+              .filter(Boolean);
+          const forcePublish = process.env.FORCE_PUBLISH === "true";
+          const confirmOverwriteTag = process.env.CONFIRM_OVERWRITE_TAG || "";
+          const versionTag = process.env.VERSION_TAG;
+          const latestTag = process.env.LATEST_TAG;
+          const maxAttempts = 4;
+          const retryStatuses = new Set([429, 500, 502, 503, 504]);
+
+          async function sleep(milliseconds) {
+              await new Promise((resolve) => setTimeout(resolve, milliseconds));
+          }
+
+          async function fetchTag(tag) {
+              const url = `https://hub.docker.com/v2/repositories/${process.env.DOWNSTREAM_IMAGE}/tags/${encodeURIComponent(tag)}`;
+              let lastError;
+
+              for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                  let response;
+
+                  try {
+                      response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+                  } catch (error) {
+                      if (attempt === maxAttempts) {
+                          throw error;
+                      }
+                      lastError = error;
+                      await sleep((3 ** attempt) * 1000);
+                      continue;
+                  }
+
+                  if (response.status === 404) {
+                      return null;
+                  }
+
+                  if (response.ok) {
+                      return await response.json();
+                  }
+
+                  const error = new Error(`Docker Hub tag lookup failed for ${tag}: ${response.status} ${response.statusText}`);
+                  if (attempt === maxAttempts || !retryStatuses.has(response.status)) {
+                      throw error;
+                  }
+
+                  lastError = error;
+                  await sleep((3 ** attempt) * 1000);
+              }
+
+              throw lastError;
+          }
+
+          function digestKey(tagInfo) {
+              const images = Array.isArray(tagInfo.images) ? tagInfo.images : [];
+              const imageDigests = images
+                  .filter((image) => image && image.digest)
+                  .map((image) => `${image.os || ""}/${image.architecture || ""}/${image.variant || ""}:${image.digest}`)
+                  .sort();
+
+              if (imageDigests.length > 0) {
+                  return imageDigests.join("|");
+              }
+
+              return tagInfo.digest || "";
+          }
+
+          async function main() {
+              if (forcePublish) {
+                  const expectedConfirmation = immutableTags.join(",");
+                  if (!expectedConfirmation || confirmOverwriteTag !== expectedConfirmation) {
+                      throw new Error(`force_publish requires confirm_overwrite_tag to exactly match: ${expectedConfirmation}`);
+                  }
+                  console.log("::notice::Manual force_publish requested. Existing immutable downstream tags may be overwritten.");
+                  fs.appendFileSync(process.env.GITHUB_OUTPUT, "publish=true\n");
+                  fs.appendFileSync(process.env.GITHUB_OUTPUT, "repair_latest=false\n");
+                  return;
+              }
+
+              const results = await Promise.all(immutableTags.map(async (tag) => ({
+                  tag,
+                  tagInfo: await fetchTag(tag),
+              })));
+              const existingTags = results.filter((result) => result.tagInfo).map((result) => result.tag);
+
+              if (existingTags.length === immutableTags.length) {
+                  const versionTagInfo = results.find((result) => result.tag === versionTag)?.tagInfo || results[0].tagInfo;
+                  const latestTagInfo = await fetchTag(latestTag);
+                  const versionDigest = digestKey(versionTagInfo);
+                  const latestDigest = latestTagInfo ? digestKey(latestTagInfo) : "";
+                  const repairLatest = !latestTagInfo || !versionDigest || versionDigest !== latestDigest;
+
+                  if (repairLatest) {
+                      console.log(`::notice::Immutable downstream tags already exist, but ${latestTag} is missing or stale.`);
+                  } else {
+                      console.log(`::notice::Immutable downstream tags already exist and ${latestTag} is current. Nothing to publish.`);
+                  }
+
+                  fs.appendFileSync(process.env.GITHUB_OUTPUT, "publish=false\n");
+                  fs.appendFileSync(process.env.GITHUB_OUTPUT, `repair_latest=${repairLatest}\n`);
+                  return;
+              }
+
+              if (existingTags.length > 0) {
+                  throw new Error(`Refusing partial overwrite. Existing immutable downstream tags: ${existingTags.join(", ")}`);
+              }
+
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, "publish=true\n");
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, "repair_latest=false\n");
+          }
+
+          main().catch((error) => {
+              console.error(`::error::${error.message}`);
+              process.exit(1);
+          });
+          NODE
+
+      - name: Merge latest upstream release into RTSP branch
+        id: merge
+        if: steps.publish_state.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_TAG: ${{ steps.release.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream "${UPSTREAM_GIT_URL}" || git remote set-url upstream "${UPSTREAM_GIT_URL}"
+          git fetch upstream "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
+          git fetch --force origin "refs/heads/${RTSP_BRANCH}:refs/remotes/origin/${RTSP_BRANCH}"
+
+          safe_tag="$(printf "%s" "${UPSTREAM_TAG}" | tr -c 'A-Za-z0-9._-' '-')"
+          sync_branch="sync/upstream-${safe_tag}-rtsp"
+
+          reuse=false
+          if git ls-remote --exit-code --heads origin "${sync_branch}" >/dev/null 2>&1; then
+            git fetch origin "refs/heads/${sync_branch}:refs/remotes/origin/${sync_branch}"
+
+            if git merge-base --is-ancestor "refs/tags/${UPSTREAM_TAG}" "origin/${sync_branch}" \
+               && git merge-base --is-ancestor "origin/${RTSP_BRANCH}" "origin/${sync_branch}"; then
+              reuse=true
+            fi
+          fi
+
+          if [ "${reuse}" = "true" ]; then
+            git switch -C "${sync_branch}" "origin/${sync_branch}"
+          else
+            git switch -C "${sync_branch}" "origin/${RTSP_BRANCH}"
+            if ! git merge --no-edit "refs/tags/${UPSTREAM_TAG}"; then
+              git merge --abort || true
+              echo "merged=false" >> "${GITHUB_OUTPUT}"
+              echo "::error::Upstream ${UPSTREAM_TAG} does not merge cleanly into ${RTSP_BRANCH}. Resolve the conflict locally on ${RTSP_BRANCH}, push the resolution, then rerun this workflow."
+              exit 1
+            fi
+            git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: bearer ${GH_TOKEN}"
+            trap 'git config --local --unset "http.https://github.com/.extraheader" || true' EXIT
+            git push origin "HEAD:refs/heads/${sync_branch}" --force-with-lease
+            git config --local --unset "http.https://github.com/.extraheader"
+            trap - EXIT
+          fi
+
+          echo "merged=true" >> "${GITHUB_OUTPUT}"
+          echo "sync_branch=${sync_branch}" >> "${GITHUB_OUTPUT}"
+
+      - name: Mark downstream RTSP version
+        if: steps.publish_state.outputs.publish == 'true' && steps.merge.outputs.merged == 'true'
+        env:
+          RTSP_VERSION: ${{ steps.release.outputs.version }}-rtsp
+        run: |
+          set -euo pipefail
+
+          npm --no-git-tag-version --ignore-scripts --allow-same-version version "${RTSP_VERSION}"
+
+      - name: Pin downstream Docker base images
+        if: steps.publish_state.outputs.publish == 'true' && steps.merge.outputs.merged == 'true'
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          const fs = require("fs");
+          const file = "docker/dockerfile";
+          const dockerfile = fs.readFileSync(file, "utf8")
+              .replace(/louislam\/uptime-kuma:base2/g, "nbetcher/uptime-kuma:base2")
+              .replace(/louislam\/uptime-kuma:builder-go/g, "nbetcher/uptime-kuma:builder-go");
+
+          fs.writeFileSync(file, dockerfile);
+          NODE
+
+      - name: Commit downstream build metadata
+        id: build_source
+        if: steps.publish_state.outputs.publish == 'true' && steps.merge.outputs.merged == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SYNC_BRANCH: ${{ steps.merge.outputs.sync_branch }}
+          UPSTREAM_TAG: ${{ steps.release.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json docker/dockerfile
+
+          if git diff --cached --quiet; then
+            echo "source_revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          git commit -m "Prepare RTSP Docker image for ${UPSTREAM_TAG}"
+          git fetch origin "refs/heads/${SYNC_BRANCH}:refs/remotes/origin/${SYNC_BRANCH}"
+          git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: bearer ${GH_TOKEN}"
+          trap 'git config --local --unset "http.https://github.com/.extraheader" || true' EXIT
+          git push origin "HEAD:refs/heads/${SYNC_BRANCH}" --force-with-lease
+          git config --local --unset "http.https://github.com/.extraheader"
+          trap - EXIT
+          echo "source_revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+  repair-latest-tag:
+    needs: prepare-rtsp-source
+    if: github.repository == 'nbetcher/uptime-kuma' && needs.prepare-rtsp-source.outputs.publish == 'false' && needs.prepare-rtsp-source.outputs.repair_latest == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ format('dockerhub-{0}', 'production') }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Repair latest RTSP Docker tag
+        env:
+          VERSION_TAG: ${{ needs.prepare-rtsp-source.outputs.version_tag }}
+          LATEST_TAG: ${{ needs.prepare-rtsp-source.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+
+          version_ref="${DOWNSTREAM_IMAGE}:${VERSION_TAG}"
+          latest_ref="${DOWNSTREAM_IMAGE}:${LATEST_TAG}"
+          version_manifest="$(mktemp)"
+          latest_manifest="$(mktemp)"
+
+          inspect_manifest() {
+            local image="$1"
+            local output="$2"
+
+            for attempt in 1 2 3; do
+              if docker buildx imagetools inspect --raw "${image}" > "${output}"; then
+                return 0
+              fi
+              sleep "$((attempt * 2))"
+            done
+
+            return 1
+          }
+
+          inspect_manifest "${version_ref}" "${version_manifest}"
+
+          if inspect_manifest "${latest_ref}" "${latest_manifest}" && cmp -s "${version_manifest}" "${latest_manifest}"; then
+            echo "::notice::${latest_ref} already matches ${version_ref}."
+            exit 0
+          fi
+
+          docker buildx imagetools create -t "${latest_ref}" "${version_ref}"
+
+  build-downstream-image:
+    needs: prepare-rtsp-source
+    if: github.repository == 'nbetcher/uptime-kuma' && needs.prepare-rtsp-source.outputs.publish == 'true' && needs.prepare-rtsp-source.outputs.merged == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment:
+      name: ${{ format('dockerhub-{0}', 'production') }}
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: ${{ needs.prepare-rtsp-source.outputs.sync_branch }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 20
+
+      - name: Validate merged source
+        run: |
+          set -euo pipefail
+
+          npm ci
+          npm run lint:prod
+          npm run build
+          npm run test-backend
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Verify Docker base image platforms
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          const { execFileSync } = require("child_process");
+
+          const downstreamImage = process.env.DOWNSTREAM_IMAGE;
+          const images = [`${downstreamImage}:base2`, `${downstreamImage}:builder-go`];
+          const requiredPlatforms = ["linux/amd64", "linux/arm64", "linux/arm/v7"];
+
+          async function inspectWithRetry(image) {
+              let lastError;
+              for (let attempt = 1; attempt <= 3; attempt++) {
+                  try {
+                      return execFileSync(
+                          "docker",
+                          ["buildx", "imagetools", "inspect", "--raw", image],
+                          { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+                      );
+                  } catch (error) {
+                      lastError = error;
+                      if (attempt < 3) {
+                          await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+                      }
+                  }
+              }
+              const stderr = lastError.stderr ? lastError.stderr.toString().trim() : "";
+              throw new Error(`Docker inspect failed for ${image}: ${lastError.message}${stderr ? `\nStderr: ${stderr}` : ""}`);
+          }
+
+          (async () => {
+              for (const image of images) {
+                  const raw = await inspectWithRetry(image);
+                  const manifest = JSON.parse(raw);
+                  const manifests = manifest.manifests || [];
+                  const platforms = new Set(manifests.map((entry) => {
+                      const platform = entry.platform || {};
+                      if (!platform.os || !platform.architecture) {
+                          return "";
+                      }
+                      return `${platform.os}/${platform.architecture}${platform.variant ? `/${platform.variant}` : ""}`;
+                  }).filter(Boolean));
+                  const missingPlatforms = requiredPlatforms.filter((platform) => !platforms.has(platform));
+                  if (missingPlatforms.length > 0) {
+                      throw new Error(`${image} is missing required platforms: ${missingPlatforms.join(", ")}`);
+                  }
+              }
+          })().catch((error) => {
+              console.error(`::error::${error.message}`);
+              process.exit(1);
+          });
+          NODE
+
+      - name: Build and push downstream RTSP Docker image
+        env:
+          DOWNSTREAM_TAGS: ${{ needs.prepare-rtsp-source.outputs.downstream_tags }}
+          SOURCE_REVISION: ${{ needs.prepare-rtsp-source.outputs.source_revision }}
+        run: |
+          set -euo pipefail
+
+          tag_args=()
+          IFS=',' read -ra tags <<< "${DOWNSTREAM_TAGS}"
+          for tag in "${tags[@]}"; do
+            tag_args+=("-t" "${DOWNSTREAM_IMAGE}:${tag}")
+          done
+
+          docker buildx build \
+            -f docker/dockerfile \
+            --platform linux/amd64,linux/arm64,linux/arm/v7 \
+            "${tag_args[@]}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${SOURCE_REVISION}" \
+            --provenance=true \
+            --sbom=true \
+            --target release \
+            . \
+            --push
