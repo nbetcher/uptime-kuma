@@ -287,10 +287,11 @@ jobs:
               echo "::error::Upstream ${UPSTREAM_TAG} does not merge cleanly into ${RTSP_BRANCH}. Resolve the conflict locally on ${RTSP_BRANCH}, push the resolution, then rerun this workflow."
               exit 1
             fi
-            git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: bearer ${GH_TOKEN}"
-            trap 'git config --local --unset "http.https://github.com/.extraheader" || true' EXIT
+            auth_header="$(node -e 'process.stdout.write(Buffer.from(`x-access-token:${process.env.GH_TOKEN}`).toString("base64"))')"
+            git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: basic ${auth_header}"
+            trap 'git config --local --unset-all "http.https://github.com/.extraheader" || true' EXIT
             git push origin "HEAD:refs/heads/${sync_branch}" --force-with-lease
-            git config --local --unset "http.https://github.com/.extraheader"
+            git config --local --unset-all "http.https://github.com/.extraheader"
             trap - EXIT
           fi
 
@@ -342,10 +343,11 @@ jobs:
 
           git commit -m "Prepare RTSP Docker image for ${UPSTREAM_TAG}"
           git fetch origin "refs/heads/${SYNC_BRANCH}:refs/remotes/origin/${SYNC_BRANCH}"
-          git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: bearer ${GH_TOKEN}"
-          trap 'git config --local --unset "http.https://github.com/.extraheader" || true' EXIT
+          auth_header="$(node -e 'process.stdout.write(Buffer.from(`x-access-token:${process.env.GH_TOKEN}`).toString("base64"))')"
+          git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: basic ${auth_header}"
+          trap 'git config --local --unset-all "http.https://github.com/.extraheader" || true' EXIT
           git push origin "HEAD:refs/heads/${SYNC_BRANCH}" --force-with-lease
-          git config --local --unset "http.https://github.com/.extraheader"
+          git config --local --unset-all "http.https://github.com/.extraheader"
           trap - EXIT
           echo "source_revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
 
