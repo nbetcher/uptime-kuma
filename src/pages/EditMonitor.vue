@@ -1173,6 +1173,10 @@
 
                                 <div class="my-3">
                                     <label class="form-label">{{ $t("RTSP Mode") }}</label>
+                                    <div v-if="rtspNativeSupportWarning" class="alert alert-warning mb-3" role="alert">
+                                        <div>{{ rtspNativeSupportWarning }}</div>
+                                        <div v-if="rtspNativeSupportDetail" class="small mt-1">{{ rtspNativeSupportDetail }}</div>
+                                    </div>
                                     <div class="btn-group d-block" role="group">
                                         <input
                                             id="rtsp-mode-basic"
@@ -1190,6 +1194,7 @@
                                             class="btn-check"
                                             type="radio"
                                             value="enhanced"
+                                            :disabled="!rtspEnhancedAvailable && monitor.streamMode !== 'enhanced'"
                                         />
                                         <label class="btn btn-outline-primary" for="rtsp-mode-enhanced">
                                             {{ $t("RTSP Mode Enhanced") }}
@@ -1200,6 +1205,7 @@
                                             class="btn-check"
                                             type="radio"
                                             value="full"
+                                            :disabled="!rtspFullAvailable && monitor.streamMode !== 'full'"
                                         />
                                         <label class="btn btn-outline-primary" for="rtsp-mode-full">
                                             {{ $t("RTSP Mode Full") }}
@@ -3421,6 +3427,7 @@ export default {
             },
             draftGroupName: null,
             remoteBrowsersEnabled: false,
+            rtspModuleStatus: null,
             lowIntervalConfirmation: {
                 confirmed: false,
                 editedValue: false,
@@ -3434,6 +3441,7 @@ export default {
          * `?rtsp_transport=` query parameter — the dedicated
          * Transport selector is canonical, so we warn that the URL
          * parameter will be ignored.
+         * @returns {boolean} True when the URL includes an RTSP transport query override
          */
         rtspUrlContainsTransportParam() {
             if (!this.monitor.url) {
@@ -3450,10 +3458,51 @@ export default {
         /**
          * Default Enhanced/Full wall-clock budget derived from the
          * monitor's interval — placeholder for the override field.
+         * @returns {number} Suggested wall-clock budget in seconds for native RTSP checks
          */
         defaultRtspBudget() {
             const i = parseInt(this.monitor.interval, 10) || 60;
             return Math.max(5, Math.min(30, Math.floor(i / 3)));
+        },
+
+        /**
+         * Whether Enhanced RTSP mode is available on this server.
+         * @returns {boolean} True when frame decoding support is available
+         */
+        rtspEnhancedAvailable() {
+            return !this.rtspModuleStatus || this.rtspModuleStatus.enhancedAvailable;
+        },
+
+        /**
+         * Whether Full RTSP mode is available on this server.
+         * @returns {boolean} True when reference-image matching support is available
+         */
+        rtspFullAvailable() {
+            return !this.rtspModuleStatus || this.rtspModuleStatus.fullAvailable;
+        },
+
+        /**
+         * User-facing warning when native RTSP dependencies are unavailable.
+         * @returns {string|null} Warning text for unavailable native RTSP modes
+         */
+        rtspNativeSupportWarning() {
+            if (this.monitor.type !== "rtsp" || (this.rtspEnhancedAvailable && this.rtspFullAvailable)) {
+                return null;
+            }
+
+            return this.rtspModuleStatus?.msg || null;
+        },
+
+        /**
+         * Additional load error detail for native RTSP dependency failures.
+         * @returns {string|null} Backend load error detail when native RTSP support failed to initialize
+         */
+        rtspNativeSupportDetail() {
+            if (!this.rtspNativeSupportWarning) {
+                return null;
+            }
+
+            return this.rtspModuleStatus?.detail || null;
         },
 
         timeoutStep() {
@@ -3801,6 +3850,12 @@ message HealthCheckResponse {
 
         "monitor.type"(newType, oldType) {
             this.checkDomain();
+
+            if (newType === "rtsp") {
+                this.refreshRtspModuleStatus();
+            } else {
+                this.rtspModuleStatus = null;
+            }
 
             if (newType === "globalping" && !this.monitor.subtype) {
                 this.monitor.subtype = "ping";
@@ -4594,6 +4649,24 @@ message HealthCheckResponse {
                     }
                 });
             }, 500);
+        },
+
+        refreshRtspModuleStatus() {
+            const socket = this.$root.getSocket ? this.$root.getSocket() : this.$root.socket;
+
+            if (!socket) {
+                this.rtspModuleStatus = null;
+                return;
+            }
+
+            socket.emit("rtsp:getModuleStatus", (res) => {
+                if (!res || !res.ok) {
+                    this.rtspModuleStatus = null;
+                    return;
+                }
+
+                this.rtspModuleStatus = res;
+            });
         },
     },
 };

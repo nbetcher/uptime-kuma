@@ -61,6 +61,7 @@ exports.messages = {
 
     // === Infra ===
     NODE_AV_UNAVAILABLE: "node-av failed to load — Enhanced/Full mode unavailable on this platform",
+    FULL_MODE_UNAVAILABLE: "Full mode unavailable — native image matching dependencies failed to load on this server",
     TIMED_OUT: (ms) => `timed out after ${ms}ms`,
     DECODE_FAILED: (reason) => `decode failed: ${reason}`,
 };

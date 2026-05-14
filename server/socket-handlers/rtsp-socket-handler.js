@@ -35,7 +35,7 @@ async function loadMonitorOrThrow(socket, monitorId) {
  * Derive the monitored hostname from the monitor row (URL hostname or
  * the legacy `hostname` column). Used by the SSRF carveout.
  * @param {object} bean Monitor bean
- * @returns {string|null}
+ * @returns {string|null} Resolved hostname for allow-list validation
  */
 function monitorHostname(bean) {
     if (bean.hostname) {
@@ -108,10 +108,41 @@ function buildEphemeralMonitor(formMonitor) {
  * - rtsp:refreshReference(monitorId, slot, cb)
  * - rtsp:deleteReference(monitorId, slot, cb)
  * - rtsp:testStream(formMonitor, cb)
+ * - rtsp:getModuleStatus(cb)
  * @param {object} socket socket.io socket
  * @returns {void}
  */
 module.exports.rtspSocketHandler = function (socket) {
+    socket.on("rtsp:getModuleStatus", async (callback) => {
+        try {
+            checkLogin(socket);
+            const { RtspMonitorType } = require("../monitor-types/rtsp");
+            const { messages } = require("../monitor-types/rtsp/messages");
+            const status = RtspMonitorType.moduleStatus();
+            let msg = null;
+            let detail = null;
+
+            if (!status.enhancedAvailable) {
+                msg = messages.NODE_AV_UNAVAILABLE;
+                detail = status.enhancedLoadError ? status.enhancedLoadError.message : null;
+            } else if (!status.fullAvailable) {
+                msg = messages.FULL_MODE_UNAVAILABLE;
+                detail = status.fullLoadError ? status.fullLoadError.message : null;
+            }
+
+            callback({
+                ok: true,
+                enhancedAvailable: status.enhancedAvailable,
+                fullAvailable: status.fullAvailable,
+                msg,
+                detail,
+            });
+        } catch (e) {
+            log.error("rtsp", `getModuleStatus: ${e.message}`);
+            callback({ ok: false, msg: e.message });
+        }
+    });
+
     socket.on("rtsp:uploadReference", async (monitorId, slot, payload, callback) => {
         try {
             checkLogin(socket);
