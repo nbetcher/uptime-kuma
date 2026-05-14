@@ -25,6 +25,7 @@ concurrency:
 env:
   UPSTREAM_REPOSITORY: louislam/uptime-kuma
   UPSTREAM_GIT_URL: https://github.com/louislam/uptime-kuma.git
+  BASE_IMAGE_REPOSITORY: louislam/uptime-kuma
   DOWNSTREAM_IMAGE: nbetcher/uptime-kuma
   RTSP_BRANCH: rtsp-monitor
 
@@ -307,7 +308,7 @@ jobs:
 
           npm --no-git-tag-version --ignore-scripts --allow-same-version version "${RTSP_VERSION}"
 
-      - name: Pin downstream Docker base images
+      - name: Use upstream Docker base images
         if: steps.publish_state.outputs.publish == 'true' && steps.merge.outputs.merged == 'true'
         run: |
           set -euo pipefail
@@ -316,8 +317,8 @@ jobs:
           const fs = require("fs");
           const file = "docker/dockerfile";
           const dockerfile = fs.readFileSync(file, "utf8")
-              .replace(/louislam\/uptime-kuma:base2/g, "nbetcher/uptime-kuma:base2")
-              .replace(/louislam\/uptime-kuma:builder-go/g, "nbetcher/uptime-kuma:builder-go");
+              .replace(/nbetcher\/uptime-kuma:base2/g, "louislam/uptime-kuma:base2")
+              .replace(/nbetcher\/uptime-kuma:builder-go/g, "louislam/uptime-kuma:builder-go");
 
           fs.writeFileSync(file, dockerfile);
           NODE
@@ -460,8 +461,8 @@ jobs:
           node <<'NODE'
           const { execFileSync } = require("child_process");
 
-          const downstreamImage = process.env.DOWNSTREAM_IMAGE;
-          const images = [`${downstreamImage}:base2`, `${downstreamImage}:builder-go`];
+          const baseImageRepository = process.env.BASE_IMAGE_REPOSITORY;
+          const images = [`${baseImageRepository}:base2`, `${baseImageRepository}:builder-go`];
           const requiredPlatforms = ["linux/amd64", "linux/arm64", "linux/arm/v7"];
 
           async function inspectWithRetry(image) {
