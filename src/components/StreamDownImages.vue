@@ -76,8 +76,8 @@ export default {
 
     methods: {
         reload() {
-            const socket = this.$root.socket;
-            if (!socket) {
+            const socket = this.$root.getSocket && this.$root.getSocket();
+            if (!socket || !socket.connected) {
                 return;
             }
             this.loading = true;

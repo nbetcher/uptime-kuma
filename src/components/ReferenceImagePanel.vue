@@ -186,7 +186,7 @@ export default {
 
     methods: {
         socket() {
-            return this.$root.socket;
+            return this.$root.getSocket && this.$root.getSocket();
         },
 
         async loadThumb(slot) {

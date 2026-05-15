@@ -6,6 +6,18 @@ const VALID_SLOTS = ["day", "night", "single"];
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
 /**
+ * Wrap a socket.io ack callback so handlers can call it freely
+ * even when a malformed/forgotten client sent the event without an
+ * ack. Without this, calling `callback(...)` raises TypeError
+ * inside an async handler and surfaces as an unhandled rejection.
+ * @param {unknown} cb Possible callback
+ * @returns {Function} Always-callable ack
+ */
+function safeCallback(cb) {
+    return typeof cb === "function" ? cb : () => {};
+}
+
+/**
  * Load the monitor row and assert (a) it exists, (b) it is an RTSP
  * monitor, (c) the calling socket's user owns it.
  * @param {object} socket Socket.io socket (must have userID)
@@ -71,12 +83,20 @@ function decodeReferenceHash(hash) {
 /**
  * Build an ephemeral monitor-shaped object from a form payload for
  * the test-stream probe. No DB writes occur.
+ *
+ * If the form carries a real monitor id (`formMonitor.id`) the test
+ * uses that for the per-monitor mutex so a Test can't race a
+ * scheduled check against the same camera. The persistence-side
+ * write paths are gated to `false` here, so reusing the real id is
+ * safe — no rows are inserted or updated.
  * @param {object} formMonitor Form state from the frontend
  * @returns {object} Stub that satisfies `RtspMonitorType.check()`
  */
 function buildEphemeralMonitor(formMonitor) {
+    const realId = parseInt(formMonitor.id, 10);
+    const id = Number.isFinite(realId) && realId > 0 ? realId : `test-${Date.now()}`;
     return {
-        id: `test-${Date.now()}`,
+        id,
         url: formMonitor.url,
         basic_auth_user: formMonitor.basic_auth_user || "",
         basic_auth_pass: formMonitor.basic_auth_pass || "",
@@ -87,6 +107,10 @@ function buildEphemeralMonitor(formMonitor) {
         stream_wall_clock_budget_sec: formMonitor.streamWallClockBudgetSec,
         stream_match_threshold: formMonitor.streamMatchThreshold,
         stream_separate_day_night: formMonitor.streamSeparateDayNight,
+        // Hard-disable any persistence side-effect for the test path
+        // — full-check.js and reference-store.persistFrameImage gate
+        // on these flags, so test invocations cannot write rows even
+        // when a real monitor.id is reused for the mutex.
         stream_status_thumbnail: false,
         stream_keep_down_images: false,
         stream_reference_day_hash: decodeReferenceHash(formMonitor.streamReferenceDayHash),
@@ -114,6 +138,7 @@ function buildEphemeralMonitor(formMonitor) {
  */
 module.exports.rtspSocketHandler = function (socket) {
     socket.on("rtsp:getModuleStatus", async (callback) => {
+        const cb = safeCallback(callback);
         try {
             checkLogin(socket);
             const { RtspMonitorType } = require("../monitor-types/rtsp");
@@ -130,7 +155,7 @@ module.exports.rtspSocketHandler = function (socket) {
                 detail = status.fullLoadError ? status.fullLoadError.message : null;
             }
 
-            callback({
+            cb({
                 ok: true,
                 enhancedAvailable: status.enhancedAvailable,
                 fullAvailable: status.fullAvailable,
@@ -139,11 +164,12 @@ module.exports.rtspSocketHandler = function (socket) {
             });
         } catch (e) {
             log.error("rtsp", `getModuleStatus: ${e.message}`);
-            callback({ ok: false, msg: e.message });
+            cb({ ok: false, msg: e.message });
         }
     });
 
     socket.on("rtsp:uploadReference", async (monitorId, slot, payload, callback) => {
+        const cb = safeCallback(callback);
         try {
             checkLogin(socket);
             if (!VALID_SLOTS.includes(slot)) {
@@ -184,14 +210,15 @@ module.exports.rtspSocketHandler = function (socket) {
             } else {
                 throw new Error("either `data` (base64) or `url` is required");
             }
-            callback({ ok: true, ...result });
+            cb({ ok: true, ...result });
         } catch (e) {
             log.error("rtsp", `uploadReference: ${e.message}`);
-            callback({ ok: false, msg: e.message });
+            cb({ ok: false, msg: e.message });
         }
     });
 
     socket.on("rtsp:getReference", async (monitorId, slot, callback) => {
+        const cb = safeCallback(callback);
         try {
             checkLogin(socket);
             if (!VALID_SLOTS.includes(slot)) {
@@ -201,10 +228,10 @@ module.exports.rtspSocketHandler = function (socket) {
             const refStore = require("../monitor-types/rtsp/reference-store");
             const buf = await refStore.getBlob({ monitorId: bean.id, slot });
             if (!buf) {
-                callback({ ok: false, msg: "no reference for this slot" });
+                cb({ ok: false, msg: "no reference for this slot" });
                 return;
             }
-            callback({
+            cb({
                 ok: true,
                 slot,
                 byteSize: buf.length,
@@ -213,11 +240,12 @@ module.exports.rtspSocketHandler = function (socket) {
             });
         } catch (e) {
             log.error("rtsp", `getReference: ${e.message}`);
-            callback({ ok: false, msg: e.message });
+            cb({ ok: false, msg: e.message });
         }
     });
 
     socket.on("rtsp:refreshReference", async (monitorId, slot, callback) => {
+        const cb = safeCallback(callback);
         try {
             checkLogin(socket);
             if (!VALID_SLOTS.includes(slot)) {
@@ -231,14 +259,15 @@ module.exports.rtspSocketHandler = function (socket) {
                 monitorHostname: monitorHostname(bean),
                 userId: socket.userID || null,
             });
-            callback({ ok: true, ...result });
+            cb({ ok: true, ...result });
         } catch (e) {
             log.error("rtsp", `refreshReference: ${e.message}`);
-            callback({ ok: false, msg: e.message });
+            cb({ ok: false, msg: e.message });
         }
     });
 
     socket.on("rtsp:listDownImages", async (monitorId, callback) => {
+        const cb = safeCallback(callback);
         try {
             checkLogin(socket);
             const bean = await loadMonitorOrThrow(socket, parseInt(monitorId, 10));
@@ -258,14 +287,15 @@ module.exports.rtspSocketHandler = function (socket) {
                     ? r.image_blob.toString("base64")
                     : Buffer.from(r.image_blob).toString("base64"),
             }));
-            callback({ ok: true, images });
+            cb({ ok: true, images });
         } catch (e) {
             log.error("rtsp", `listDownImages: ${e.message}`);
-            callback({ ok: false, msg: e.message });
+            cb({ ok: false, msg: e.message });
         }
     });
 
     socket.on("rtsp:deleteReference", async (monitorId, slot, callback) => {
+        const cb = safeCallback(callback);
         try {
             checkLogin(socket);
             if (!VALID_SLOTS.includes(slot)) {
@@ -278,14 +308,15 @@ module.exports.rtspSocketHandler = function (socket) {
                 slot,
                 userId: socket.userID || null,
             });
-            callback({ ok: true });
+            cb({ ok: true });
         } catch (e) {
             log.error("rtsp", `deleteReference: ${e.message}`);
-            callback({ ok: false, msg: e.message });
+            cb({ ok: false, msg: e.message });
         }
     });
 
     socket.on("rtsp:testStream", async (formMonitor, callback) => {
+        const cb = safeCallback(callback);
         try {
             checkLogin(socket);
             if (!formMonitor || formMonitor.type !== "rtsp") {
@@ -300,7 +331,7 @@ module.exports.rtspSocketHandler = function (socket) {
             try {
                 await type.check(stub, heartbeat, null);
             } catch (err) {
-                callback({
+                cb({
                     ok: false,
                     mode: stub.stream_mode,
                     msg: err.message,
@@ -325,7 +356,7 @@ module.exports.rtspSocketHandler = function (socket) {
                 }
             }
 
-            callback({
+            cb({
                 ok: true,
                 mode: stub.stream_mode,
                 msg: heartbeat.msg,
@@ -334,7 +365,7 @@ module.exports.rtspSocketHandler = function (socket) {
             });
         } catch (e) {
             log.error("rtsp", `testStream: ${e.message}`);
-            callback({ ok: false, msg: e.message });
+            cb({ ok: false, msg: e.message });
         }
     });
 };

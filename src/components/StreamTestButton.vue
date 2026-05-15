@@ -55,8 +55,8 @@ export default {
         },
 
         runTest() {
-            const socket = this.$root.socket;
-            if (!socket) {
+            const socket = this.$root.getSocket && this.$root.getSocket();
+            if (!socket || !socket.connected) {
                 this.result = { ok: false, msg: "no socket" };
                 return;
             }
