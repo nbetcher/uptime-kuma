@@ -75,6 +75,10 @@ async function run(monitor, heartbeat, ctx) {
             } catch (e) {
                 log.debug("rtsp", `enhanced: toJpeg failed: ${e.message}`);
                 continue;
+            } finally {
+                if (frame && typeof frame.free === "function") {
+                    frame.free();
+                }
             }
 
             try {

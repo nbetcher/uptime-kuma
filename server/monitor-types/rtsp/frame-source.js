@@ -12,11 +12,12 @@
  * Implementation note: the `node-av` package's API (Demuxer /
  * Decoder / Encoder / Filter, with async iterators) is documented
  * at https://github.com/seydx/node-av. The adapter below targets
- * that high-level API but uses runtime feature detection so
- * minor-version differences don't break things outright.
+ * that high-level API and fails fast if the required entry points
+ * are unavailable.
  */
 
-const av = require("node-av");
+const av = require("node-av/api");
+const { AV_PIX_FMT_RGB24 } = require("node-av/constants");
 const sharp = require("sharp");
 const { messages } = require("./messages");
 
@@ -103,57 +104,80 @@ function buildOpenOptions(ctx) {
 /**
  * NodeAvFrameSource wraps an open node-av session.
  *
- * The class uses runtime feature detection rather than committing
- * to a single API shape, because `node-av`'s public surface has
- * been in flux. The class is small enough that swapping for a
- * different shape is localised.
+ * The class targets the documented `node-av/api` Demuxer, Decoder,
+ * FilterAPI, and ImageUtils surface. The class is small enough that
+ * swapping for a different shape is localised if node-av changes.
  */
 class NodeAvFrameSource {
     /**
      * @param {object} demuxer node-av demuxer session
      * @param {object|null} decoder node-av decoder session
      * @param {object} ctx Preflight context
+     * @param {object|null} videoStream node-av video stream
+     * @param {AbortController|null} abortController Shared node-av cancellation controller
      */
-    constructor(demuxer, decoder, ctx) {
+    constructor(demuxer, decoder, ctx, videoStream = null, abortController = null) {
         this.demuxer = demuxer;
         this.decoder = decoder;
         this.ctx = ctx;
+        this.videoStream = videoStream;
+        this._abortController = abortController;
         this._closed = false;
         this._frameIterator = null;
+        this._rgbFilter = null;
     }
 
     /**
-     * Open a node-av session for the given URL. Tries the documented
-     * `Demuxer.create(...)`/`Decoder.create(...)` pair first; falls
-     * back to other shapes if present.
+     * Open a node-av session for the given URL using the documented
+     * `Demuxer.open` / `Decoder.create` pair from `node-av/api`.
      * @param {object} ctx Preflight context
      * @returns {Promise<NodeAvFrameSource>} Opened source
      */
     static async open(ctx) {
+        if (!av.Demuxer || typeof av.Demuxer.open !== "function" || !av.Decoder || typeof av.Decoder.create !== "function") {
+            throw new Error("node-av: required Demuxer.open / Decoder.create are unavailable; install a current node-av release");
+        }
         const opts = buildOpenOptions(ctx);
+        const openOptions = { options: opts };
+        const abortController = typeof AbortController === "function" ? new AbortController() : null;
+        if (ctx.protocol === "rtsp" || ctx.protocol === "rtsps") {
+            openOptions.format = "rtsp";
+        }
+        if (abortController) {
+            openOptions.signal = abortController.signal;
+        }
         let demuxer;
         let decoder = null;
+        let videoStream = null;
         try {
-            if (av.Demuxer && typeof av.Demuxer.create === "function") {
-                demuxer = await withDeadline(av.Demuxer.create(ctx.url, opts), ctx.budgetMs);
-                const videoStream = demuxer.streams?.find?.((s) => s.codecType === "video") || demuxer.videoStream;
-                if (!videoStream) {
-                    throw new Error("no video stream in input");
-                }
-                if (av.Decoder && typeof av.Decoder.create === "function") {
-                    decoder = await withDeadline(av.Decoder.create(videoStream), ctx.budgetMs);
-                }
-            } else if (av.MediaInput && typeof av.MediaInput.open === "function") {
-                demuxer = await withDeadline(av.MediaInput.open(ctx.url, opts), ctx.budgetMs);
-            } else if (typeof av.open === "function") {
-                demuxer = await withDeadline(av.open(ctx.url, opts), ctx.budgetMs);
-            } else {
-                throw new Error("node-av: no recognised open() API; install a current node-av release");
+            demuxer = await withDeadline(
+                av.Demuxer.open(ctx.url, openOptions),
+                ctx.budgetMs,
+                () => abortController?.abort()
+            );
+            videoStream = typeof demuxer.video === "function" ? demuxer.video() : null;
+            if (!videoStream) {
+                throw new Error("no video stream in input");
             }
-        } catch (e) {
-            throw new Error(messages.DECODE_FAILED(e.message || String(e)));
+            const decoderOptions = abortController ? { signal: abortController.signal } : undefined;
+            decoder = await withDeadline(
+                av.Decoder.create(videoStream, decoderOptions),
+                ctx.budgetMs,
+                () => abortController?.abort()
+            );
+        } catch (error) {
+            for (const session of [decoder, demuxer]) {
+                try {
+                    if (session && typeof session.close === "function") {
+                        await session.close();
+                    }
+                } catch {
+                    /* ignored */
+                }
+            }
+            throw new Error(messages.DECODE_FAILED(error.message || String(error)));
         }
-        return new NodeAvFrameSource(demuxer, decoder, ctx);
+        return new NodeAvFrameSource(demuxer, decoder, ctx, videoStream, abortController);
     }
 
     /**
@@ -183,35 +207,31 @@ class NodeAvFrameSource {
                 if (this.demuxer && typeof this.demuxer.cancel === "function") {
                     this.demuxer.cancel();
                 }
+                if (this._abortController) {
+                    this._abortController.abort();
+                }
             } catch {
                 /* abort hooks are best-effort */
             }
         };
         try {
-            // If we have a Decoder, use its async iterator (the
-            // documented `node-av` pattern).
-            if (this.decoder && typeof this.decoder.frames === "function") {
-                if (!this._frameIterator) {
-                    const iter = this.decoder.frames();
-                    this._frameIterator = iter[Symbol.asyncIterator] ? iter[Symbol.asyncIterator]() : iter;
-                }
-                const p = this._frameIterator.next();
-                const wrapped = remainingMs && remainingMs > 0 ? withDeadline(p, remainingMs, abort) : p;
-                const result = await wrapped;
-                if (!result || result.done) {
-                    return null;
-                }
-                return result.value;
+            if (!this.decoder || typeof this.decoder.frames !== "function") {
+                throw new Error("node-av: decoder.frames() is unavailable");
             }
-            // Legacy / alternative API surfaces.
-            const session = this.demuxer;
-            const fn = session.readFrame || session.nextFrame || session.decode;
-            if (typeof fn !== "function") {
-                throw new Error("node-av: no recognised frame-iteration API");
+            if (!this._frameIterator) {
+                if (!this.demuxer || !this.videoStream || typeof this.demuxer.packets !== "function") {
+                    throw new Error("node-av: demuxer.packets() is unavailable");
+                }
+                const packetSource = this.demuxer.packets(this.videoStream.index);
+                this._frameIterator = this.decoder.frames(packetSource);
             }
-            const p = fn.call(session);
+            const p = this._frameIterator.next();
             const wrapped = remainingMs && remainingMs > 0 ? withDeadline(p, remainingMs, abort) : p;
-            return await wrapped;
+            const result = await wrapped;
+            if (!result || result.done) {
+                return null;
+            }
+            return result.value;
         } catch (e) {
             const msg = (e && e.message) || String(e);
             if (/end ?of ?(file|stream)|EOF|EOS/i.test(msg)) {
@@ -250,6 +270,10 @@ class NodeAvFrameSource {
             return frame.data;
         }
 
+        if (Array.isArray(frame.data) && frame.width && frame.height && av.FilterAPI && av.ImageUtils) {
+            return await this.nodeAvFrameToJpeg(frame);
+        }
+
         // Case 3: frame carries raw pixels. The decoder MAY have
         // already converted to RGB/RGBA via a filter; if it's still
         // in a planar YUV format we fail loudly so the user knows
@@ -283,6 +307,54 @@ class NodeAvFrameSource {
     }
 
     /**
+     * Convert a node-av Frame to JPEG via an RGB filter and sharp.
+     * @param {object} frame node-av Frame
+     * @returns {Promise<Buffer>} JPEG bytes
+     */
+    async nodeAvFrameToJpeg(frame) {
+        if (!this._rgbFilter) {
+            this._rgbFilter = av.FilterAPI.create("format=rgb24");
+        }
+
+        const filteredFrames = await this._rgbFilter.processAll(frame);
+        const rgbFrame = filteredFrames.find((candidate) => candidate && candidate.width && candidate.height);
+        try {
+            if (!rgbFrame) {
+                throw new Error(messages.FRAME_INVALID("RGB filter produced no output"));
+            }
+            const width = rgbFrame.width;
+            const height = rgbFrame.height;
+            const rawSize = av.ImageUtils.getBufferSize(AV_PIX_FMT_RGB24, width, height, 1);
+            const raw = Buffer.alloc(rawSize);
+            const written = av.ImageUtils.copyToBuffer(
+                raw,
+                rawSize,
+                rgbFrame.data,
+                rgbFrame.linesize,
+                AV_PIX_FMT_RGB24,
+                width,
+                height,
+                1
+            );
+            if (written < 0) {
+                throw new Error(messages.FRAME_INVALID(`RGB frame copy failed (${written})`));
+            }
+            const pixels = written === raw.length ? raw : raw.subarray(0, written);
+            return await sharp(pixels, {
+                raw: { width, height, channels: 3 },
+            })
+                .jpeg({ quality: 75, mozjpeg: true })
+                .toBuffer();
+        } finally {
+            for (const filteredFrame of filteredFrames) {
+                if (filteredFrame && filteredFrame !== frame && typeof filteredFrame.free === "function") {
+                    filteredFrame.free();
+                }
+            }
+        }
+    }
+
+    /**
      * Close the session, freeing libav handles. Logs (not throws)
      * cleanup errors so a leaked-handle bug is visible without
      * masking the original failure that led us here.
@@ -310,11 +382,18 @@ class NodeAvFrameSource {
                 log.warn("rtsp", `${label} close failed: ${e.message}`);
             }
         };
+        if (this._abortController && !this._abortController.signal.aborted) {
+            this._abortController.abort();
+        }
+        await safeClose(this._rgbFilter, "RGB filter");
         await safeClose(this.decoder, "decoder");
         await safeClose(this.demuxer, "demuxer");
         this.demuxer = null;
         this.decoder = null;
+        this.videoStream = null;
+        this._abortController = null;
         this._frameIterator = null;
+        this._rgbFilter = null;
     }
 
     /**

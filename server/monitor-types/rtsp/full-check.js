@@ -54,7 +54,11 @@ async function run(monitor, heartbeat, ctx) {
             } catch (e) {
                 log.debug("rtsp", `full: discarding invalid frame: ${e.message}`);
                 jpeg = null;
-                continue;
+            } finally {
+                if (frame && typeof frame.free === "function") {
+                    frame.free();
+                }
+                frame = null;
             }
         }
         if (!jpeg) {
