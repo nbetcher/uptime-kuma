@@ -1,10 +1,13 @@
 const { UP, log } = require("../../../src/util");
 const { messages } = require("./messages");
-const { NodeAvFrameSource } = require("./frame-source");
+const { NodeAvFrameSource, withDeadline } = require("./frame-source");
 const { validateJpegStructure, fingerprint, distance, FP_TOTAL_BITS } = require("./image-pipeline");
 const { persistFrameImage } = require("./reference-store");
 
 const DEFAULT_THRESHOLD = 24;
+// Best-effort metadata probe; bounded so a hung demuxer never stalls
+// the check past the wall-clock budget (matches enhanced-check.js).
+const KEYFRAME_PROBE_MS = 750;
 
 /**
  * Full-mode entry point: capture one frame, fingerprint, compare
@@ -25,7 +28,11 @@ async function run(monitor, heartbeat, ctx) {
 
         // UI-011: stash keyframe interval for the Test button warning.
         try {
-            keyframeIntervalSec = await source.getKeyframeInterval();
+            keyframeIntervalSec = await withDeadline(
+                source.getKeyframeInterval(),
+                KEYFRAME_PROBE_MS,
+                null
+            );
         } catch (e) {
             log.debug("rtsp", `full: keyframe-interval probe failed: ${e.message}`);
         }
@@ -100,7 +107,11 @@ async function run(monitor, heartbeat, ctx) {
     const best = scoreNight !== null && (scoreDay === null || scoreNight < scoreDay) ? scoreNight : scoreDay;
 
     heartbeat.ping = Date.now() - startMs;
-    if (keyframeIntervalSec != null) {
+    // UI-011: only the Test button consumes this. The scheduled-check
+    // path's `heartbeat` is a frozen RedBean bean; adding unmodelled
+    // properties would cause R.store to write `keyframe_interval_sec`.
+    // The socket handler sets `_isTestStream` on its ephemeral monitor.
+    if (monitor._isTestStream && keyframeIntervalSec != null) {
         heartbeat.keyframeIntervalSec = keyframeIntervalSec;
     }
 

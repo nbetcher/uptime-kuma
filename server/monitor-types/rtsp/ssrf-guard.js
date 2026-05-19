@@ -300,6 +300,13 @@ async function fetchUrl(urlStr, opts = {}) {
                     // signals intent and reduces wasted round-trips
                     // for SVG-only origins.
                     Accept: ALLOWED_CONTENT_TYPES.join(", "),
+                    // Refuse compressed transfers: the body-size cap
+                    // counts on-wire bytes, and Node's HTTP client
+                    // does not transparently decompress. An origin
+                    // that ignores this and gzip-encodes anyway will
+                    // produce a sharp decode failure downstream — the
+                    // safe direction.
+                    "Accept-Encoding": "identity",
                 },
                 servername: url.hostname,
                 timeout: FETCH_TIMEOUT_MS,

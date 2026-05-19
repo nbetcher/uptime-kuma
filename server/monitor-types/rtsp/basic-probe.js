@@ -8,6 +8,53 @@ const RTSP_USER_AGENT = "UptimeKuma/2.x";
 const MAX_RESPONSE_BYTES = 4096;
 const RTMP_HANDSHAKE_BYTES = 1537;
 
+// Node's documented TLS-failure error codes. Substring matching the
+// human-readable message is fragile across releases and locales; codes
+// are stable. Anything else surfaces with its native message via the
+// generic-error path.
+const TLS_HOSTNAME_CODES = new Set([
+    "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+const TLS_CERT_INVALID_CODES = new Set([
+    "DEPTH_ZERO_SELF_SIGNED_CERT",
+    "SELF_SIGNED_CERT_IN_CHAIN",
+    "CERT_HAS_EXPIRED",
+    "CERT_NOT_YET_VALID",
+    "UNABLE_TO_GET_ISSUER_CERT",
+    "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+    "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+    "ERR_TLS_CERT_ALTNAME_FORMAT",
+    "CERT_REVOKED",
+    "CERT_SIGNATURE_FAILURE",
+    "CERT_UNTRUSTED",
+    "INVALID_CA",
+    "UNSUPPORTED_CERTIFICATE_PURPOSE",
+]);
+
+/**
+ * Map a socket-level error to a heartbeat-friendly Error using Node's
+ * stable error codes.
+ * @param {Error} err Source error
+ * @param {object} ctx Preflight context (used for hostname in messages)
+ * @returns {Error} Re-shaped error with a catalog message
+ */
+function classifySocketError(err, ctx) {
+    const code = err.code || "";
+    if (code === "ECONNREFUSED") {
+        return new Error(messages.CONNECTION_REFUSED());
+    }
+    if (code === "ECONNRESET") {
+        return new Error(messages.CONNECTION_RESET());
+    }
+    if (TLS_HOSTNAME_CODES.has(code)) {
+        return new Error(messages.TLS_HOSTNAME_MISMATCH(ctx.host));
+    }
+    if (TLS_CERT_INVALID_CODES.has(code)) {
+        return new Error(messages.TLS_CERT_INVALID(err.message || code));
+    }
+    return err;
+}
+
 /**
  * Open a socket (TCP or TLS). Resolves on `connect` / `secureConnect`,
  * rejects on error or timeout.
@@ -65,23 +112,7 @@ function openSocket(ctx) {
 
         socket.on("error", (err) => {
             clearTimeout(timer);
-            const code = err.code || "";
-            if (code === "ECONNREFUSED") {
-                done(new Error(messages.CONNECTION_REFUSED()));
-            } else if (code === "ECONNRESET") {
-                done(new Error(messages.CONNECTION_RESET()));
-            } else if (err.message && err.message.includes("hostname")) {
-                done(new Error(messages.TLS_HOSTNAME_MISMATCH(ctx.host)));
-            } else if (
-                code === "DEPTH_ZERO_SELF_SIGNED_CERT" ||
-                code === "SELF_SIGNED_CERT_IN_CHAIN" ||
-                code === "CERT_HAS_EXPIRED" ||
-                (err.message && err.message.toLowerCase().includes("certificate"))
-            ) {
-                done(new Error(messages.TLS_CERT_INVALID(err.message)));
-            } else {
-                done(err);
-            }
+            done(classifySocketError(err, ctx));
         });
     });
 }
@@ -137,6 +168,7 @@ function readBytes(socket, maxBytes, timeoutMs, stopOnDoubleCrlf) {
                 const joined = Buffer.concat(chunks);
                 if (joined.indexOf("\r\n\r\n") >= 0) {
                     done(null, joined);
+                    return;
                 }
             }
         };
@@ -366,5 +398,6 @@ module.exports = {
     probeRtmp,
     parseRtspResponse,
     classifyRtspStatus,
+    classifySocketError,
     writeSocket,
 };

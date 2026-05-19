@@ -146,13 +146,18 @@ class NodeAvFrameSource {
         if (abortController) {
             openOptions.signal = abortController.signal;
         }
+        // Reserve at most 40% of the wall-clock budget (and never more
+        // than 8s) for the handshake so a slow open() can't starve the
+        // frame loop into INSUFFICIENT_FRAMES. The remaining budget
+        // is enforced by the caller's per-frame `remainingMs`.
+        const openDeadlineMs = Math.max(1000, Math.min(8000, Math.floor(ctx.budgetMs * 0.4)));
         let demuxer;
         let decoder = null;
         let videoStream = null;
         try {
             demuxer = await withDeadline(
                 av.Demuxer.open(ctx.url, openOptions),
-                ctx.budgetMs,
+                openDeadlineMs,
                 () => abortController?.abort()
             );
             videoStream = typeof demuxer.video === "function" ? demuxer.video() : null;
@@ -162,7 +167,7 @@ class NodeAvFrameSource {
             const decoderOptions = abortController ? { signal: abortController.signal } : undefined;
             decoder = await withDeadline(
                 av.Decoder.create(videoStream, decoderOptions),
-                ctx.budgetMs,
+                openDeadlineMs,
                 () => abortController?.abort()
             );
         } catch (error) {

@@ -101,7 +101,13 @@ const monitorMutexes = new Map(); // monitor.id → Promise chain tip
  * @returns {Promise<{release: Function}>} Disposable token
  */
 async function acquireConcurrencyToken(monitor, budgetMs) {
-    const timeout = Math.min((monitor.timeout || 30) * 1000, budgetMs * 2);
+    // Wait at least as long as the wall-clock budget: a check that
+    // already has the budget to *run* shouldn't be denied a token in
+    // less time. Bounded above by 2× the budget so a saturated install
+    // surfaces SkipCheckError promptly enough to keep the scheduler
+    // signal visible per NFR-004 acceptance (c).
+    const monitorTimeoutMs = (parseInt(monitor.timeout, 10) || 30) * 1000;
+    const timeout = Math.min(Math.max(monitorTimeoutMs, budgetMs), budgetMs * 2);
     try {
         await globalBucket.acquire(timeout);
     } catch (err) {

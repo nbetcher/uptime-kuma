@@ -34,6 +34,16 @@ const SOBEL_X_KERNEL = {
     kernel: [-1, 0, 1, -2, 0, 2, -1, 0, 1],
 };
 
+// HLDS §11.1: env vars are read once at module load. Changes require a
+// server restart, consistent with the rest of `server/config.js`.
+function envInt(name, fallback) {
+    const n = parseInt(process.env[name], 10);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+const REFERENCE_MAX_DIM_DEFAULT = envInt("RTSP_REFERENCE_MAX_DIM", 640);
+const REFERENCE_QUALITY_DEFAULT = envInt("RTSP_REFERENCE_QUALITY", 85);
+const DOWN_IMAGE_MAX_DIM_DEFAULT = envInt("RTSP_DOWN_IMAGE_MAX_DIM", 320);
+
 /**
  * Validate the JPEG structural shape of a decoded frame.
  * @param {Buffer} buf JPEG bytes
@@ -223,8 +233,8 @@ async function luminanceStats(jpegBuf) {
  * @returns {Promise<Buffer>} Canonicalised JPEG
  */
 async function canonicalize(inputBuf, opts = {}) {
-    const maxDim = parseInt(process.env.RTSP_REFERENCE_MAX_DIM, 10) || opts.maxDim || 640;
-    const quality = parseInt(process.env.RTSP_REFERENCE_QUALITY, 10) || opts.quality || 85;
+    const maxDim = opts.maxDim || REFERENCE_MAX_DIM_DEFAULT;
+    const quality = opts.quality || REFERENCE_QUALITY_DEFAULT;
 
     // sharp strips metadata by default; calling .withMetadata()
     // would *add* it back. The mozjpeg re-encode below sanitises
@@ -244,7 +254,7 @@ async function canonicalize(inputBuf, opts = {}) {
  * @returns {Promise<Buffer>} Thumbnail JPEG
  */
 async function thumbnailize(jpegBuf) {
-    const maxDim = parseInt(process.env.RTSP_DOWN_IMAGE_MAX_DIM, 10) || 320;
+    const maxDim = DOWN_IMAGE_MAX_DIM_DEFAULT;
     // sharp strips metadata by default; .withMetadata() would add it back.
     return sharp(jpegBuf)
         .resize(maxDim, maxDim, { fit: "inside", withoutEnlargement: true })

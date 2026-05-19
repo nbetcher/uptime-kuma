@@ -34,7 +34,8 @@ exports.messages = {
     INSUFFICIENT_FRAMES: (got, wanted) => `only ${got}/${wanted} valid frames captured`,
     FROZEN_FRAME: (n) => `stream appears frozen — ${n} identical frames`,
     BLACK_FRAME: (s) => `stream appears black or uniform (mean=${s.mean}, stddev=${s.stddev})`,
-    ENHANCED_OK: (n, ms) => `captured ${n} frames in ${ms}ms`,
+    ENHANCED_OK: (n, wanted, ms) =>
+        n === wanted ? `captured ${n} frames in ${ms}ms` : `captured ${n}/${wanted} frames in ${ms}ms (partial)`,
     FRAME_INVALID: (reason) => `frame validation failed: ${reason}`,
 
     // === Full ===

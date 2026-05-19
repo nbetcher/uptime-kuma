@@ -97,6 +97,11 @@ function buildEphemeralMonitor(formMonitor) {
     const id = Number.isFinite(realId) && realId > 0 ? realId : `test-${Date.now()}`;
     return {
         id,
+        // Marker read by enhanced/full check so they may attach
+        // non-DB-column diagnostics (e.g. keyframeIntervalSec) to the
+        // heartbeat object. Never set on a real Monitor bean — keeps
+        // R.store off the path for those properties.
+        _isTestStream: true,
         url: formMonitor.url,
         basic_auth_user: formMonitor.basic_auth_user || "",
         basic_auth_pass: formMonitor.basic_auth_pass || "",

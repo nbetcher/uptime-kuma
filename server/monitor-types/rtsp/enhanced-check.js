@@ -1,8 +1,13 @@
 const crypto = require("node:crypto");
 const { UP, log } = require("../../../src/util");
 const { messages } = require("./messages");
-const { NodeAvFrameSource } = require("./frame-source");
+const { NodeAvFrameSource, withDeadline } = require("./frame-source");
 const { validateJpegStructure, luminanceStats } = require("./image-pipeline");
+
+// Best-effort metadata probe; bounded so a hung demuxer never stalls
+// the check past the wall-clock budget. UI-011 is a nice-to-have, not
+// part of the heartbeat-pass criteria, so a timeout here is fine.
+const KEYFRAME_PROBE_MS = 750;
 
 const BLACK_FRAME_MEAN_THRESHOLD = 5;
 const BLACK_FRAME_STDDEV_THRESHOLD = 2;
@@ -43,7 +48,11 @@ async function run(monitor, heartbeat, ctx) {
 
         // UI-011: stash keyframe interval for the Test button warning.
         try {
-            keyframeIntervalSec = await source.getKeyframeInterval();
+            keyframeIntervalSec = await withDeadline(
+                source.getKeyframeInterval(),
+                KEYFRAME_PROBE_MS,
+                null
+            );
         } catch (e) {
             log.debug("rtsp", `enhanced: keyframe-interval probe failed: ${e.message}`);
         }
@@ -62,7 +71,13 @@ async function run(monitor, heartbeat, ctx) {
                 if (buffers.length === 0) {
                     throw e;
                 }
-                log.debug("rtsp", `enhanced: read error after ${buffers.length} frames: ${e.message}`);
+                // A mid-capture failure means the count we end up
+                // reporting (`buffers.length`) is < `wanted`. The
+                // ENHANCED_OK message renders that as a "partial"
+                // suffix so the operator can correlate. Warn-level
+                // here so it surfaces in the logs page without
+                // requiring debug.
+                log.warn("rtsp", `enhanced: read error after ${buffers.length}/${wanted} frames: ${e.message}`);
                 break;
             }
             if (frame === null) {
@@ -118,10 +133,14 @@ async function run(monitor, heartbeat, ctx) {
 
     heartbeat.status = UP;
     heartbeat.ping = Date.now() - startMs;
-    heartbeat.msg = messages.ENHANCED_OK(buffers.length, heartbeat.ping);
-    // Surface for the Test button warning surface (UI-011) — the
-    // socket handler reads this off the heartbeat object.
-    if (keyframeIntervalSec != null) {
+    heartbeat.msg = messages.ENHANCED_OK(buffers.length, wanted, heartbeat.ping);
+    // UI-011: only the Test button consumes this. On the scheduled
+    // check path `heartbeat` is a RedBean bean and R.freeze(true) is
+    // global, so attaching unmodelled properties would cause R.store
+    // to write a non-existent `keyframe_interval_sec` column. The
+    // socket handler sets `_isTestStream` on its ephemeral monitor
+    // stub; we use that flag to gate the assignment.
+    if (monitor._isTestStream && keyframeIntervalSec != null) {
         heartbeat.keyframeIntervalSec = keyframeIntervalSec;
     }
 

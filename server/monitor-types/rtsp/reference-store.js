@@ -60,22 +60,70 @@ async function processRaw(rawBytes) {
 }
 
 /**
- * Persist a processed reference onto the monitor row.
+ * Persist a processed reference onto the monitor row. When `trx` is
+ * provided the UPDATE runs on the transaction; otherwise on the
+ * default connection.
  * @param {number} monitorId Monitor ID
  * @param {string} slot 'day' | 'night' | 'single'
  * @param {Buffer} blob Canonical JPEG
  * @param {Buffer} hash Packed fingerprint
  * @param {string|null} sourceUrl Source URL if any
+ * @param {object} [trx] Optional RedBean transaction
  * @returns {Promise<void>}
  */
-async function persist(monitorId, slot, blob, hash, sourceUrl) {
+async function persist(monitorId, slot, blob, hash, sourceUrl, trx) {
     const cols = columnsForSlot(slot);
-    await R.exec(`UPDATE monitor SET ${cols.blobCol} = ?, ${cols.urlCol} = ?, ${cols.hashCol} = ? WHERE id = ?`, [
-        blob,
-        sourceUrl,
-        hash,
-        monitorId,
-    ]);
+    const sql = `UPDATE monitor SET ${cols.blobCol} = ?, ${cols.urlCol} = ?, ${cols.hashCol} = ? WHERE id = ?`;
+    const bindings = [ blob, sourceUrl, hash, monitorId ];
+    if (trx) {
+        await trx.exec(sql, bindings);
+        return;
+    }
+    await R.exec(sql, bindings);
+}
+
+/**
+ * Run `persist` + `recordAudit` atomically. Either both succeed or
+ * neither: addresses the race where an observer sees the new blob but
+ * the audit reports the old SHA (M6 from the audit). Used by all
+ * non-delete upload paths.
+ * @param {object} args Persist + audit arguments
+ * @param {number} args.monitorId Monitor ID
+ * @param {string} args.slot 'day' | 'night' | 'single'
+ * @param {Buffer} args.blob Canonical JPEG
+ * @param {Buffer} args.hash Packed fingerprint
+ * @param {string|null} args.sourceUrl Source URL if any
+ * @param {string} args.source Audit source label
+ * @param {Buffer} args.sha256 SHA-256 of canonical bytes
+ * @param {number|null} args.userId Authenticated user id
+ * @returns {Promise<void>}
+ */
+async function persistWithAudit(args) {
+    const { monitorId, slot, blob, hash, sourceUrl, source, sha256, userId } = args;
+    let trx;
+    try {
+        trx = await R.begin();
+        await persist(monitorId, slot, blob, hash, sourceUrl, trx);
+        await recordAudit({
+            monitorId,
+            slot,
+            source,
+            byteSize: blob.length,
+            sha256,
+            userId,
+            trx,
+        });
+        await trx.commit();
+    } catch (e) {
+        if (trx) {
+            try {
+                await trx.rollback();
+            } catch {
+                /* ignored — original error is the meaningful one */
+            }
+        }
+        throw e;
+    }
 }
 
 /**
@@ -97,12 +145,13 @@ async function uploadBlob(args) {
         throw new Error("empty upload");
     }
     const processed = await processRaw(bytes);
-    await persist(monitorId, slot, processed.blob, processed.hash, null);
-    await recordAudit({
+    await persistWithAudit({
         monitorId,
         slot,
+        blob: processed.blob,
+        hash: processed.hash,
+        sourceUrl: null,
         source: "upload",
-        byteSize: processed.blob.length,
         sha256: processed.sha256,
         userId,
     });
@@ -138,12 +187,13 @@ async function uploadUrl(args) {
 
     const bytes = await fetchUrl(url, { monitorHostname });
     const processed = await processRaw(bytes);
-    await persist(monitorId, slot, processed.blob, processed.hash, url);
-    await recordAudit({
+    await persistWithAudit({
         monitorId,
         slot,
+        blob: processed.blob,
+        hash: processed.hash,
+        sourceUrl: url,
         source: "url-fetch",
-        byteSize: processed.blob.length,
         sha256: processed.sha256,
         userId,
     });
@@ -177,12 +227,13 @@ async function refreshUrl(args) {
     }
     const bytes = await fetchUrl(row.url, { monitorHostname });
     const processed = await processRaw(bytes);
-    await persist(monitorId, slot, processed.blob, processed.hash, row.url);
-    await recordAudit({
+    await persistWithAudit({
         monitorId,
         slot,
+        blob: processed.blob,
+        hash: processed.hash,
+        sourceUrl: row.url,
         source: "url-refresh",
-        byteSize: processed.blob.length,
         sha256: processed.sha256,
         userId,
     });
