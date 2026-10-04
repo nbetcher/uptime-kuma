@@ -105,7 +105,6 @@ jobs:
       - name: Merge latest upstream release into RTSP branch
         id: merge
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_TAG: ${{ steps.release.outputs.upstream_tag }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.gemini_model || 'gemini-flash-latest' }}
@@ -138,7 +137,15 @@ jobs:
           else
             git switch -C "${sync_branch}" "origin/${RTSP_BRANCH}"
             git config merge.conflictStyle diff3
-            if ! git merge --no-edit "refs/tags/${UPSTREAM_TAG}"; then
+            git merge --no-commit --no-ff "refs/tags/${UPSTREAM_TAG}" || true
+
+            # Keep this fork's .github/workflows: GITHUB_TOKEN cannot push workflow changes,
+            # and upstream's workflows are not part of the Docker image.
+            git checkout "origin/${RTSP_BRANCH}" -- .github/workflows
+            git diff --cached --name-only -z --diff-filter=A "origin/${RTSP_BRANCH}" -- .github/workflows \
+              | xargs -0 -r git rm -q -f --
+
+            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
               if [ "${AI_RESOLVE_CONFLICTS}" != "true" ] || [ -z "${GEMINI_API_KEY}" ]; then
                 git merge --abort || true
                 echo "::error::Upstream ${UPSTREAM_TAG} does not merge cleanly into ${RTSP_BRANCH}. Resolve the conflict locally on ${RTSP_BRANCH}, push the resolution, then rerun this workflow (or enable ai_resolve_conflicts with the GEMINI_API_KEY secret set)."
@@ -368,24 +375,44 @@ jobs:
                 exit 1
               fi
 
-              git commit --no-edit -m "Merge upstream ${UPSTREAM_TAG} into ${RTSP_BRANCH}" -m "Merge conflicts resolved automatically with ${GEMINI_MODEL}; review before publishing."
-
-              # Prove the AI-merged tree installs and builds before pushing it anywhere
-              npm ci --ignore-scripts --no-audit --no-fund
-              npm run build
-
               echo "ai_resolved=true" >> "${GITHUB_OUTPUT}"
               echo "::warning::Merge conflicts were resolved by ${GEMINI_MODEL}. Review ${sync_branch}, then rerun this workflow to build and publish it."
+              commit_note="Merge conflicts resolved automatically with ${GEMINI_MODEL}; review before publishing."
+            else
+              commit_note="Workflow files are kept from ${RTSP_BRANCH}."
             fi
-            auth_header="$(node -e 'process.stdout.write(Buffer.from(`x-access-token:${process.env.GH_TOKEN}`).toString("base64"))')"
-            git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: basic ${auth_header}"
-            trap 'git config --local --unset-all "http.https://github.com/.extraheader" || true' EXIT
-            git push origin "HEAD:refs/heads/${sync_branch}" --force-with-lease
-            git config --local --unset-all "http.https://github.com/.extraheader"
-            trap - EXIT
+
+            if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+              git commit -m "Merge upstream ${UPSTREAM_TAG} into ${RTSP_BRANCH}" -m "${commit_note}"
+            fi
+            echo "needs_push=true" >> "${GITHUB_OUTPUT}"
           fi
 
           echo "sync_branch=${sync_branch}" >> "${GITHUB_OUTPUT}"
+
+      # No tokens in this step: it runs code from the freshly merged tree
+      - name: Validate merged source installs and builds
+        if: steps.merge.outputs.needs_push == 'true'
+        run: |
+          set -euo pipefail
+
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+
+      - name: Push sync branch
+        if: steps.merge.outputs.needs_push == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SYNC_BRANCH: ${{ steps.merge.outputs.sync_branch }}
+        run: |
+          set -euo pipefail
+
+          auth_header="$(node -e 'process.stdout.write(Buffer.from(`x-access-token:${process.env.GH_TOKEN}`).toString("base64"))')"
+          git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: basic ${auth_header}"
+          trap 'git config --local --unset-all "http.https://github.com/.extraheader" || true' EXIT
+          git push origin "HEAD:refs/heads/${SYNC_BRANCH}" --force-with-lease
+          git config --local --unset-all "http.https://github.com/.extraheader"
+          trap - EXIT
 
       - name: Mark downstream RTSP version
         env:
