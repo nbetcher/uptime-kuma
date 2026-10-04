@@ -39,7 +39,7 @@ function stubMonitor(overrides) {
     };
 }
 
-describe("RTSP reference storage against a real SQLite database", async () => {
+describe(`RTSP reference storage against a real ${process.env.RTSP_TEST_MARIADB_URL ? "MariaDB" : "SQLite"} database`, async () => {
     const { probeNativeSupport } = require("../../../server/monitor-types/rtsp/frame-capture");
     const native = await probeNativeSupport();
     const skip = native.nodeAv || native.sharp ? `native support unavailable: ${native.nodeAv || native.sharp}` : false;
@@ -53,7 +53,10 @@ describe("RTSP reference storage against a real SQLite database", async () => {
     before(async () => {
         const Dialect = require("knex/lib/dialects/sqlite3/index.js");
         Dialect.prototype._driver = () => require("@louislam/sqlite3");
-        const knex = require("knex")({
+        const knex = require("knex")(process.env.RTSP_TEST_MARIADB_URL ? {
+            client: "mysql2",
+            connection: process.env.RTSP_TEST_MARIADB_URL,
+        } : {
             client: Dialect,
             connection: { filename: dbPath },
             useNullAsDefault: true,
@@ -71,6 +74,13 @@ describe("RTSP reference storage against a real SQLite database", async () => {
             if (m.file === REFERENCE_TABLE_MIGRATION) {
                 break;
             }
+            if (m.file === "2026-05-11-0000-add-stream-monitor.js") {
+                // Simulate MariaDB's partially committed original migration:
+                // all monitor columns exist but auxiliary tables do not.
+                await require(path.join(MIGRATIONS, m.file)).up(knex);
+                await knex.schema.dropTable("monitor_reference_audit");
+                await knex.schema.dropTable("monitor_stream_down_image");
+            }
             await knex.migrate.up({ directory: MIGRATIONS, name: m.file });
         }
 
@@ -83,6 +93,9 @@ describe("RTSP reference storage against a real SQLite database", async () => {
             type: "rtsp",
             url: "rtsp://cam.local/s",
             user_id: userId,
+            accepted_statuscodes_json: '["200-299"]',
+            method: "GET",
+            conditions: "[]",
             stream_mode: "full",
             stream_reference_day_blob: legacyBlob,
             stream_reference_day_hash: Buffer.alloc(16, 1),
@@ -97,6 +110,29 @@ describe("RTSP reference storage against a real SQLite database", async () => {
             });
         }
         heartbeatCount = 3;
+        // Cross the migration's paging boundary with real stored images.
+        await knex("monitor").insert(Array.from({ length: 105 }, (_, i) => ({
+            name: `migration-page-${i}`,
+            type: "rtsp",
+            user_id: userId,
+            accepted_statuscodes_json: '["200-299"]',
+            method: "GET",
+            conditions: "[]",
+            stream_reference_day_blob: legacyBlob,
+            stream_reference_day_hash: Buffer.alloc(16, 1),
+        })));
+
+        const interruptedKnex = (table) => {
+            const query = knex(table);
+            if (table === "monitor_stream_reference") {
+                query.insert = () => {
+                    throw new Error("fixture backfill interruption");
+                };
+            }
+            return query;
+        };
+        interruptedKnex.schema = knex.schema;
+        await assert.rejects(require(path.join(MIGRATIONS, REFERENCE_TABLE_MIGRATION)).up(interruptedKnex), /Could not migrate stream reference/);
 
         await knex.migrate.latest({ directory: MIGRATIONS });
         // Match production (database.js): transactions are no-ops in
@@ -127,6 +163,44 @@ describe("RTSP reference storage against a real SQLite database", async () => {
     test("migration keeps heartbeats", async () => {
         const row = await R.getRow("SELECT COUNT(*) AS n FROM heartbeat WHERE monitor_id = ?", [monitorId]);
         assert.strictEqual(Number(row.n), heartbeatCount);
+    });
+
+    test("migration preserves references across page boundaries", async () => {
+        const row = await R.getRow("SELECT COUNT(*) AS n FROM monitor_stream_reference");
+        assert.strictEqual(Number(row.n), 106);
+    });
+
+    test("paged rollback and re-upgrade preserve images and heartbeats", async () => {
+        const migration = require(path.join(MIGRATIONS, REFERENCE_TABLE_MIGRATION));
+        await migration.down(R.knex);
+        const refs = await R.getRow("SELECT COUNT(*) AS n FROM monitor WHERE stream_reference_day_blob IS NOT NULL");
+        assert.strictEqual(Number(refs.n), 106);
+        const heartbeats = await R.getRow("SELECT COUNT(*) AS n FROM heartbeat");
+        assert.strictEqual(Number(heartbeats.n), heartbeatCount);
+        await migration.up(R.knex);
+        const store = require("../../../server/monitor-types/rtsp/reference-store");
+        assert.ok((await store.getBlob({ monitorId, slot: "day" })).equals(legacyBlob));
+    });
+
+    test("reference sockets and saved-monitor tests enforce login and ownership", async () => {
+        const { rtspSocketHandler } = require("../../../server/socket-handlers/rtsp-socket-handler");
+        for (const userID of [null, 99999]) {
+            const handlers = new Map();
+            rtspSocketHandler({ userID, on: (event, handler) => handlers.set(event, handler) });
+            for (const [event, args] of [
+                ["rtsp:getReferenceInfo", [monitorId]],
+                ["rtsp:getReference", [monitorId, "day"]],
+                ["rtsp:uploadReference", [monitorId, "day", { url: "http://127.0.0.1/snapshot" }]],
+                ["rtsp:refreshReference", [monitorId, "day"]],
+                ["rtsp:deleteReference", [monitorId, "day"]],
+                ["rtsp:listDownImages", [monitorId]],
+                ["rtsp:testStream", [{ type: "rtsp", id: monitorId, url: "rtsp://127.0.0.1/stream" }]],
+            ]) {
+                const result = await new Promise((resolve) => handlers.get(event)(...args, resolve));
+                assert.strictEqual(result.ok, false);
+                assert.match(result.msg, userID ? /Permission denied/ : /not logged in/);
+            }
+        }
     });
 
     test("upload, read back, fingerprint, and delete a reference", { skip }, async () => {
@@ -187,6 +261,39 @@ describe("RTSP reference storage against a real SQLite database", async () => {
                 ["match", 1],
             ]
         );
+    });
+
+    test("failed reference writes preserve images and hide rendered SQL", { skip }, async (t) => {
+        const store = require("../../../server/monitor-types/rtsp/reference-store");
+        const sharp = require("sharp");
+        const png = await sharp({ create: { width: 160, height: 120, channels: 3, background: "#112233" } }).png().toBuffer();
+        await store.uploadBlob({ monitorId, slot: "night", bytes: png, userId: null });
+        const beforeBlob = await store.getBlob({ monitorId, slot: "night" });
+        const begin = R.begin.bind(R);
+        t.mock.method(R, "begin", async () => {
+            const trx = await begin();
+            const exec = trx.exec.bind(trx);
+            trx.exec = (sql, values) => {
+                if (sql.startsWith("INSERT INTO monitor_reference_audit")) {
+                    const error = new Error("INSERT X'ffd8-private-image' source_url='http://user:secret@camera' fixture SQL");
+                    error.code = "ER_FIXTURE_FAILURE";
+                    throw error;
+                }
+                return exec(sql, values);
+            };
+            return trx;
+        });
+        for (const action of [
+            () => store.uploadBlob({ monitorId, slot: "night", bytes: png, userId: null }),
+            () => store.deleteSlot({ monitorId, slot: "night", userId: null }),
+        ]) {
+            await assert.rejects(action(), (error) => {
+                assert.match(error.message, /ER_FIXTURE_FAILURE/);
+                assert.doesNotMatch(error.message, /private-image|secret|INSERT/);
+                return true;
+            });
+            assert.ok((await store.getBlob({ monitorId, slot: "night" })).equals(beforeBlob));
+        }
     });
 
     test("Full mode matches a frame against its stored reference end to end", { skip }, async () => {

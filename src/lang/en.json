@@ -1563,6 +1563,7 @@
     "RTSP Reference Day": "Day reference image",
     "RTSP Reference Night": "Night reference image",
     "RTSP Reference Single": "Reference image",
+    "RTSP Verified TLS Capture Unavailable": "Verified TLS frame capture is unavailable because the decoder cannot reliably verify certificate hostnames. Use Basic mode for verified TLS. Ignore TLS explicitly disables certificate verification.",
     "RTSP Reference Images": "Reference Images",
     "RTSP Reference Match Threshold": "Match threshold (Hamming distance 0–128)",
     "RTSP Reference Threshold Description": "Lower = stricter. Default 24 of 128 bits tolerates day/night and weather changes.",

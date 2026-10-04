@@ -3,6 +3,10 @@ const assert = require("node:assert");
 const { validateStreamMonitor } = require("../../../server/monitor-types/rtsp/validation");
 
 describe("validateStreamMonitor", () => {
+    test("rejects mismatched URL schemes and RTMP/UDP without an explicit selector", () => {
+        assert.throws(() => validateStreamMonitor({ type: "rtsp", url: "rtsp://camera/live", streamProtocol: "rtsps" }, null), /must match/);
+        assert.throws(() => validateStreamMonitor({ type: "rtsp", url: "rtmp://camera/live", streamTransport: "udp" }, null), /TCP-only/);
+    });
     test("ignores non-rtsp monitors", () => {
         // no throw expected
         validateStreamMonitor({ type: "http" }, null);

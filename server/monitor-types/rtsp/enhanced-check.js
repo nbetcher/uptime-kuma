@@ -2,7 +2,6 @@ const crypto = require("node:crypto");
 const { UP, log } = require("../../../src/util");
 const { messages } = require("./messages");
 const { captureFrames } = require("./frame-capture");
-const { verifyTlsEndpoint } = require("./basic-probe");
 const { validateJpegStructure, luminanceStats } = require("./image-pipeline");
 
 const BLACK_FRAME_MEAN_THRESHOLD = 5;
@@ -36,8 +35,6 @@ async function run(monitor, heartbeat, ctx) {
     const startMs = Date.now();
     const wantedRaw = parseInt(monitor.stream_frame_count, 10);
     const wanted = Number.isFinite(wantedRaw) ? Math.max(2, Math.min(15, wantedRaw)) : 5;
-
-    await verifyTlsEndpoint({ ...ctx, timeoutMs: Math.min(ctx.timeoutMs, ctx.budgetMs) });
 
     const capture = await captureFrames(ctx, {
         count: wanted,

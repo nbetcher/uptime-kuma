@@ -12,7 +12,7 @@
  * context. See `docs/rtsp-monitor/11-architecture-review.md` §2.1.
  */
 
-const { fork } = require("node:child_process");
+const childProcess = require("node:child_process");
 const path = require("node:path");
 const { log } = require("../../../src/util");
 const { messages } = require("./messages");
@@ -46,6 +46,9 @@ const LIVE_FRAME_MAX_DIM = 640;
  * @returns {{input: string, format: string|null, options: object}} Worker job fields
  */
 function buildLibavInput(ctx) {
+    if (ctx.tlsVerify && (ctx.protocol === "rtsps" || ctx.protocol === "rtmps")) {
+        throw new Error(messages.VERIFIED_TLS_CAPTURE_UNAVAILABLE);
+    }
     const url = new URL(ctx.url);
     if (ctx.username || ctx.password) {
         // The URL setters percent-encode reserved characters; libav
@@ -80,7 +83,28 @@ function buildLibavInput(ctx) {
         options.analyzeduration = "1000000";
     }
 
-    return { input: url.toString(), format, options };
+    if (ctx.protocol === "rtsps" || ctx.protocol === "rtmps") {
+        // Only an explicit Ignore TLS choice can reach this decoder.
+        options.tls_verify = "0";
+    }
+
+    let input = url.toString();
+    if ((ctx.protocol === "rtmp" || ctx.protocol === "rtmps") && (ctx.username || ctx.password)) {
+        // Unlike RTSP, FFmpeg's RTMP handler never URL-decodes userinfo.
+        // Re-encoding "p@ss" would authenticate as "p%40ss". Its parser
+        // also has fixed 50-byte credential buffers and treats /?# or
+        // whitespace as URL delimiters; fail explicitly for those cases.
+        const username = ctx.username || "";
+        const password = ctx.password || "";
+        if (/[:/?#%&=\s]/.test(username) || /[/?#\s]/.test(password) ||
+            Buffer.byteLength(username) > 49 || Buffer.byteLength(password) > 49) {
+            throw new Error("RTMP credentials cannot be represented by this decoder: use at most 49 bytes per field, without URL path delimiters or whitespace (and no colon, percent sign or query delimiters in the username)");
+        }
+        url.username = "";
+        url.password = "";
+        input = url.toString().replace("://", `://${username}:${password}@`);
+    }
+    return { input, format, options };
 }
 
 /**
@@ -97,7 +121,7 @@ function redact(text, job, ctx) {
         out = out.split(job.input).join(scrubUrlCredentialsForLog(job.input));
     }
     for (const secret of [ctx?.password, ctx?.password && encodeURIComponent(ctx.password)]) {
-        if (secret && secret.length >= 3) {
+        if (secret) {
             out = out.split(secret).join("***");
         }
     }
@@ -109,7 +133,7 @@ function redact(text, job, ctx) {
  * @returns {import("node:child_process").ChildProcess} Worker
  */
 function spawnWorker() {
-    return fork(WORKER_PATH, [], {
+    return childProcess.fork(WORKER_PATH, [], {
         serialization: "advanced",
         // Never inherit --inspect / --max-old-space-size etc. from the
         // server process.
@@ -141,6 +165,8 @@ function runWorker(job, budgetMs, ctx = null) {
         let firstFrameMs = null;
         let stderrTail = "";
         let settled = false;
+        let outcome = null;
+        let killer = null;
         let child;
 
         try {
@@ -156,11 +182,10 @@ function runWorker(job, budgetMs, ctx = null) {
             }
             settled = true;
             clearTimeout(timer);
+            outcome = { frames, firstFrameMs, stopReason, detail };
             if (child.exitCode === null && child.signalCode === null) {
                 if (stopReason === "count" || stopReason === "eof") {
-                    const killer = setTimeout(() => child.kill("SIGKILL"), CLOSE_GRACE_MS);
-                    killer.unref();
-                    child.once("close", () => clearTimeout(killer));
+                    killer = setTimeout(() => child.kill("SIGKILL"), Math.min(CLOSE_GRACE_MS, Math.max(0, budgetMs - (Date.now() - startMs))));
                 } else {
                     child.kill("SIGKILL");
                 }
@@ -168,11 +193,10 @@ function runWorker(job, budgetMs, ctx = null) {
             if (stderrTail && stopReason !== "count" && stopReason !== "eof") {
                 log.debug("rtsp", `frame worker stderr (tail): ${redact(stderrTail, job, ctx)}`);
             }
-            if (frames.length === 0 && (stopReason === "error" || stopReason === "crash")) {
-                reject(new Error(detail));
-                return;
-            }
-            resolve({ frames, firstFrameMs, stopReason, detail });
+            // Settle only after "close": callers release the global
+            // decode slot and per-monitor mutex as soon as we return.
+            // Releasing while native cleanup is still running permits
+            // overlapping camera sessions and exceeds the worker limit.
         };
 
         const timer = setTimeout(() => finish("timeout", messages.TIMED_OUT(budgetMs)), budgetMs);
@@ -206,9 +230,21 @@ function runWorker(job, budgetMs, ctx = null) {
         // "close" rather than "exit": it fires only after the IPC
         // channel has drained, so a worker that sent "done" and exited
         // is never mistaken for a crash.
-        child.on("close", (code, signal) => finish("crash", messages.WORKER_CRASHED(signal || `exit code ${code}`)));
+        child.on("close", (code, signal) => {
+            finish("crash", messages.WORKER_CRASHED(signal || `exit code ${code}`));
+            clearTimeout(killer);
+            if (frames.length === 0 && (outcome.stopReason === "error" || outcome.stopReason === "crash")) {
+                reject(new Error(outcome.detail));
+            } else {
+                resolve(outcome);
+            }
+        });
 
-        child.send({ type: "capture", ...job });
+        child.send({ type: "capture", ...job }, (err) => {
+            if (err) {
+                finish("crash", messages.WORKER_FAILED(err.message));
+            }
+        });
     });
 }
 
@@ -221,13 +257,13 @@ function runWorker(job, budgetMs, ctx = null) {
  * @param {number} opts.budgetMs Hard wall-clock limit
  * @returns {Promise<{frames: Buffer[], firstFrameMs: number|null, stopReason: string, detail: string|null}>} Capture result
  */
-function captureFrames(ctx, { count, budgetMs }) {
+async function captureFrames(ctx, { count, budgetMs }) {
     const job = {
         ...buildLibavInput(ctx),
         count,
         maxDim: LIVE_FRAME_MAX_DIM,
     };
-    return runWorker(job, budgetMs, ctx);
+    return await runWorker(job, budgetMs, ctx);
 }
 
 let probePromise = null;

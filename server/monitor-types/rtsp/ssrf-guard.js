@@ -227,7 +227,7 @@ function classifyIp(ip) {
  * @returns {Promise<{address: string, family: number}>}
  */
 async function resolveOnce(hostname) {
-    return dns.lookup(hostname, { family: 0, verbatim: true });
+    return dns.lookup(hostname.replace(/^\[(.*)\]$/, "$1"), { family: 0, verbatim: true });
 }
 
 /**
@@ -237,15 +237,42 @@ async function resolveOnce(hostname) {
  * @param {string} opts.monitorHostname Hostname of the monitored
  *     camera — used for the "same private range" carveout.
  * @param {number} opts.maxBytes Body cap
+ * @param {number} opts.timeoutMs Optional wall-clock deadline in milliseconds
  * @returns {Promise<Buffer>} Response body
  */
 async function fetchUrl(urlStr, opts = {}) {
+    const controller = new AbortController();
+    const timeoutMs = opts.timeoutMs || FETCH_TIMEOUT_MS;
+    let timer;
+    const deadline = new Promise((resolve, reject) => {
+        timer = setTimeout(() => {
+            const error = new Error(`reference URL fetch timed out after ${timeoutMs}ms`);
+            controller.abort(error);
+            reject(error);
+        }, timeoutMs);
+    });
+    try {
+        // Include both DNS lookups and all body bytes in one deadline.
+        return await Promise.race([fetchPinnedUrl(urlStr, opts, controller.signal), deadline]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/**
+ * Resolve and fetch a reference, stopping all network activity on abort.
+ * @param {string} urlStr Reference URL
+ * @param {object} opts Fetch options
+ * @param {AbortSignal} signal Wall-clock cancellation
+ * @returns {Promise<Buffer>} Response bytes
+ */
+async function fetchPinnedUrl(urlStr, opts, signal) {
     const maxBytes = opts.maxBytes || DEFAULT_MAX_BYTES;
     let url;
     try {
         url = new URL(urlStr);
     } catch (e) {
-        throw new Error(`invalid URL: ${e.message}`);
+        throw new Error("invalid reference URL");
     }
 
     if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -253,6 +280,7 @@ async function fetchUrl(urlStr, opts = {}) {
     }
 
     const { address: ip } = await resolveOnce(url.hostname);
+    signal.throwIfAborted();
     const bucket = classifyIp(ip);
 
     if (bucket) {
@@ -279,6 +307,8 @@ async function fetchUrl(urlStr, opts = {}) {
         }
     }
 
+    signal.throwIfAborted();
+
     return new Promise((resolve, reject) => {
         const lib = url.protocol === "https:" ? https : http;
         const port = url.port || (url.protocol === "https:" ? 443 : 80);
@@ -291,7 +321,7 @@ async function fetchUrl(urlStr, opts = {}) {
                 port,
                 path: url.pathname + url.search,
                 headers: {
-                    Host: url.hostname,
+                    Host: url.host,
                     "User-Agent": "UptimeKuma-RTSP-Ref/1.0",
                     // Constrain the Accept header to the same shapes
                     // the response-side allowlist enforces; this
@@ -306,24 +336,27 @@ async function fetchUrl(urlStr, opts = {}) {
                     // safe direction.
                     "Accept-Encoding": "identity",
                 },
-                servername: url.hostname,
-                timeout: FETCH_TIMEOUT_MS,
+                servername: url.hostname.replace(/^\[(.*)\]$/, "$1"),
+                auth: url.username || url.password
+                    ? `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`
+                    : undefined,
+                signal,
                 method: "GET",
             },
             (res) => {
                 if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400) {
-                    res.resume();
+                    res.destroy();
                     reject(new Error(`reference URL returned redirect ${res.statusCode}; redirects are not followed`));
                     return;
                 }
                 if (res.statusCode !== 200) {
-                    res.resume();
+                    res.destroy();
                     reject(new Error(`reference URL returned HTTP ${res.statusCode}`));
                     return;
                 }
                 const ctype = (res.headers["content-type"] || "").toLowerCase().split(";")[0].trim();
                 if (!ALLOWED_CONTENT_TYPES.includes(ctype)) {
-                    res.resume();
+                    res.destroy();
                     reject(
                         new Error(
                             `reference URL content-type is ${ctype || "(absent)"}, must be one of ${ALLOWED_CONTENT_TYPES.join(", ")}`
@@ -342,7 +375,12 @@ async function fetchUrl(urlStr, opts = {}) {
                     total += chunk.length;
                     if (total > maxBytes) {
                         aborted = true;
-                        req.destroy(new Error(`reference URL body exceeds ${maxBytes} bytes`));
+                        reject(new Error(`reference URL body exceeds ${maxBytes} bytes`));
+                        // Passing an error to a request whose socket has
+                        // already entered keep-alive can emit an unhandled
+                        // socket error. Reject explicitly, close the body.
+                        res.destroy();
+                        req.destroy();
                         return;
                     }
                     chunks.push(chunk);
@@ -361,9 +399,6 @@ async function fetchUrl(urlStr, opts = {}) {
             }
         );
         req.on("error", reject);
-        req.on("timeout", () => {
-            req.destroy(new Error(`reference URL fetch timed out after ${FETCH_TIMEOUT_MS}ms`));
-        });
         req.end();
     });
 }

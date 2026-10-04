@@ -70,6 +70,10 @@ class RtspMonitorType extends MonitorType {
                 throw new Error(messages.UNKNOWN_MODE(mode));
             }
 
+            if (ctx.tlsVerify && (ctx.protocol === "rtsps" || ctx.protocol === "rtmps")) {
+                throw new Error(messages.VERIFIED_TLS_CAPTURE_UNAVAILABLE);
+            }
+
             const status = await RtspMonitorType.moduleStatus();
             const available = mode === "enhanced" ? status.enhancedAvailable : status.fullAvailable;
             if (!available) {

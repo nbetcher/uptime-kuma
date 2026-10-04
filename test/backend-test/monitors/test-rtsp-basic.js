@@ -5,6 +5,36 @@ const { UP, PENDING } = require("../../../src/util");
 const { RtspMonitorType } = require("../../../server/monitor-types/rtsp");
 const { parseRtspResponse, classifyRtspStatus } = require("../../../server/monitor-types/rtsp/basic-probe");
 
+test("truncated RTSP headers and malformed CSeq values do not prove liveness", () => {
+    for (const response of ["RTSP/1.0 200 OK\r\nCSeq: 1", "RTSP/1.0 200 OK\r\nCSeq: 1garbage\r\n\r\n"]) {
+        assert.throws(() => parseRtspResponse(Buffer.from(response), 1), /did not speak RTSP/);
+    }
+});
+
+test("RTMP requires all 1537 bytes of S0+S1 even when the peer closes", async () => {
+    for (const bytes of [1, 100, 1536, 1537]) {
+        const { server, port } = await makeRtspServer((socket) => {
+            socket.once("data", () => {
+                const response = Buffer.alloc(bytes);
+                response[0] = 3;
+                socket.end(response);
+            });
+        });
+        try {
+            const heartbeat = {};
+            const check = new RtspMonitorType().check(stubMonitor({ url: `rtmp://127.0.0.1:${port}/live` }), heartbeat, {});
+            if (bytes === 1537) {
+                await check;
+                assert.strictEqual(heartbeat.status, UP);
+            } else {
+                await assert.rejects(check, /did not speak RTMP/);
+            }
+        } finally {
+            server.close();
+        }
+    }
+});
+
 /**
  * Spin up an in-process TCP server that handles a single connection
  * with a canned RTSP response. Returns the server and its assigned

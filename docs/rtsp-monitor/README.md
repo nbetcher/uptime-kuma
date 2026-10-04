@@ -36,6 +36,7 @@ upstream Uptime Kuma maintainers (notably `@CommanderStorm` and `@louislam`).
 | 9 | [09-traceability-matrix.md](./09-traceability-matrix.md) | Two-way map between original prompt bullets, REQ-IDs, and reviewer concerns — for adversarial review |
 | 10 | [10-high-level-design.md](./10-high-level-design.md) | High-Level Design Specification — module layout, data model, interfaces, sequence flows, error model, test strategy. Resolves Q13–Q21 and corrects sanity-check items found while writing the HLDS |
 | 11 | [11-architecture-review.md](./11-architecture-review.md) | Post-implementation architecture review: defects found against real servers, what changed (decode in a worker process, credential/TLS/timeout fixes, reference table, bounded skips), and open recommendations. Supersedes parts of 10 |
+| 12 | [12-security-and-correctness-audit.md](./12-security-and-correctness-audit.md) | Audit of `rtsp-monitor-architecture`: High/Medium findings, fixes, dependency updates, verification and current TLS capture limitations. Supersedes 11's TLS precheck posture |
 
 ## How to read these
 

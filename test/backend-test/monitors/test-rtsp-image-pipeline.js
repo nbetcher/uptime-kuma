@@ -116,6 +116,16 @@ describe("image-pipeline — fingerprint", { skip }, () => {
         assert.ok(meta.width <= 640, `width ${meta.width}`);
         assert.ok(meta.height <= 640, `height ${meta.height}`);
     });
+
+    test("reference decompression is bounded by pixel count before resizing", async () => {
+        const jpeg = Buffer.from(await makeJpeg({ width: 128, height: 128 }));
+        const sof = jpeg.indexOf(Buffer.from([0xff, 0xc0]));
+        assert.ok(sof >= 0);
+        // Change only the coded dimensions, keeping the fixture tiny.
+        jpeg.writeUInt16BE(2049, sof + 5);
+        jpeg.writeUInt16BE(8192, sof + 7);
+        await assert.rejects(pipeline.canonicalize(jpeg), /pixel limit|exceeds/i);
+    });
 });
 
 describe("image-pipeline — dHash math", { skip }, () => {

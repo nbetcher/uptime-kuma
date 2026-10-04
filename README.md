@@ -74,7 +74,7 @@ Requirements:
   - ✅ Windows 10 (x64), Windows Server 2012 R2 (x64) or higher
   - ❌ FreeBSD / OpenBSD / NetBSD
   - ❌ Replit / Heroku
-- [Node.js](https://nodejs.org/en/download/) >= 20.4
+- [Node.js](https://nodejs.org/en/download/) >= 20.9
 - [Git](https://git-scm.com/downloads)
 - [pm2](https://pm2.keymetrics.io/) - For running Uptime Kuma in the background
 

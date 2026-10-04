@@ -1142,7 +1142,12 @@
 
                                 <div class="my-3">
                                     <label for="rtsp-protocol" class="form-label">{{ $t("RTSP Protocol") }}</label>
-                                    <select id="rtsp-protocol" v-model="monitor.streamProtocol" class="form-select">
+                                    <select
+                                        id="rtsp-protocol"
+                                        v-model="monitor.streamProtocol"
+                                        class="form-select"
+                                        @change="monitor.url = monitor.url.replace(/^[a-z]+:/i, monitor.streamProtocol + ':')"
+                                    >
                                         <option value="rtsp">RTSP</option>
                                         <option value="rtsps">RTSPS</option>
                                         <option value="rtmp">RTMP</option>
@@ -1298,6 +1303,13 @@
                                     <label class="form-check-label" for="rtsp-separate-dn">
                                         {{ $t("RTSP Separate Day Night") }}
                                     </label>
+                                </div>
+
+                                <div
+                                    v-if="monitor.streamMode !== 'basic' && !monitor.ignoreTls && ['rtsps', 'rtmps'].includes(monitor.streamProtocol)"
+                                    class="alert alert-warning my-3"
+                                >
+                                    {{ $t("RTSP Verified TLS Capture Unavailable") }}
                                 </div>
 
                                 <!-- Reference image panel surfaces lazy-loaded BLOB via REST -->
@@ -3836,6 +3848,12 @@ message HealthCheckResponse {
 
         "monitor.url"() {
             this.checkDomain();
+            if (this.monitor.type === "rtsp") {
+                const protocol = (this.monitor.url || "").match(/^(rtsps?|rtmps?):/i)?.[1]?.toLowerCase();
+                if (protocol) {
+                    this.monitor.streamProtocol = protocol;
+                }
+            }
         },
 
         "monitor.grpcUrl"() {

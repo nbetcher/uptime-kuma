@@ -3,6 +3,13 @@ const assert = require("node:assert");
 const crypto = require("node:crypto");
 const net = require("node:net");
 const path = require("node:path");
+const fs = require("node:fs");
+const os = require("node:os");
+const tls = require("node:tls");
+const { execFileSync } = require("node:child_process");
+const childProcess = require("node:child_process");
+const { EventEmitter } = require("node:events");
+const { PassThrough } = require("node:stream");
 const { pathToFileURL } = require("node:url");
 const {
     buildLibavInput,
@@ -78,6 +85,20 @@ function threadpoolLatency() {
 }
 
 describe("buildLibavInput", () => {
+    test("RTMP passes literal credentials to its non-decoding auth parser", () => {
+        const job = buildLibavInput({ url: "rtmp://host/live", protocol: "rtmp", timeoutMs: 5000, username: "u@ser", password: "p%41@ss:word" });
+        assert.strictEqual(job.input, "rtmp://u@ser:p%41@ss:word@host/live");
+        assert.throws(() => buildLibavInput({ url: "rtmp://host/live", protocol: "rtmp", timeoutMs: 5000, username: "u", password: "p/ss" }), /cannot be represented/);
+        for (const credentials of [
+            { username: "percent%user", password: "password" },
+            { username: "user", password: "a".repeat(50) },
+            { username: "user", password: "é".repeat(25) },
+        ]) {
+            assert.throws(() => buildLibavInput({ url: "rtmp://host/live", protocol: "rtmp", timeoutMs: 5000, ...credentials }), /cannot be represented/);
+        }
+        const boundary = buildLibavInput({ url: "rtmp://host/live", protocol: "rtmp", timeoutMs: 5000, username: "u", password: "a".repeat(49) });
+        assert.strictEqual(boundary.input, `rtmp://u:${"a".repeat(49)}@host/live`);
+    });
     test("puts credentials in the URL userinfo, percent-encoded", () => {
         const job = buildLibavInput({
             url: "rtsp://cam.local:554/s",
@@ -120,11 +141,37 @@ describe("buildLibavInput", () => {
 });
 
 describe("redact", () => {
+    test("redacts short passwords and multiple URLs embedded in native logs", () => {
+        const out = redact("password xy; open rtsp://u:xy@camera/a and rtsp://u:xy@camera/b", null, { password: "xy" });
+        assert.doesNotMatch(out, /xy|u:xy/);
+    });
     test("removes the credentialed input URL and raw password", () => {
         const job = { input: "rtsp://admin:hunter22@cam/s" };
         const out = redact("open rtsp://admin:hunter22@cam/s failed; pw hunter22", job, { password: "hunter22" });
         assert.doesNotMatch(out, /hunter22/);
     });
+});
+
+test("worker cleanup retains the caller's decode slot until child close", async (t) => {
+    const child = new EventEmitter();
+    child.stderr = new PassThrough();
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = () => {};
+    child.send = () => {
+        setImmediate(() => child.emit("message", { type: "frame", jpeg: Buffer.from("frame") }));
+    };
+    t.mock.method(childProcess, "fork", () => child);
+    let returned = false;
+    const capture = runWorker({ count: 1 }, 1000).then((result) => {
+        returned = true;
+        return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.strictEqual(returned, false, "native teardown still holds the slot");
+    child.exitCode = 0;
+    child.emit("close", 0, null);
+    assert.strictEqual((await capture).stopReason, "count");
 });
 
 describe("frame worker (node-av in a child process)", async () => {
@@ -221,4 +268,67 @@ describe("frame worker (node-av in a child process)", async () => {
         const result = await captureFrames(ctx, { count: 2, budgetMs: 15000 });
         assert.strictEqual(result.frames.length, 2);
     });
+
+    test("verified TLS capture fails closed, while Basic verifies chain and hostname", { skip }, async (t) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-tls-test-"));
+        const certPath = path.join(dir, "cert.pem");
+        try {
+            try {
+                execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                    "-keyout", path.join(dir, "key.pem"), "-out", certPath, "-subj", "/CN=localhost",
+                    "-addext", "subjectAltName=DNS:localhost"], { stdio: "ignore" });
+            } catch (error) {
+                if (error.code === "ENOENT") {
+                    t.skip("openssl unavailable for generating a test certificate");
+                    return;
+                }
+                throw error;
+            }
+            let requests = 0;
+            const server = tls.createServer({ key: fs.readFileSync(path.join(dir, "key.pem")), cert: fs.readFileSync(certPath) }, (socket) => {
+                socket.on("error", () => {});
+                socket.on("data", (data) => {
+                    requests++;
+                    const seq = data.toString().match(/CSeq:\s*(\d+)/i)?.[1] || "1";
+                    socket.end(`RTSP/1.0 404 Not Found\r\nCSeq: ${seq}\r\n\r\n`);
+                });
+            });
+            await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+            try {
+                const ctx = await preflight({ url: `rtsps://127.0.0.1:${server.address().port}/s`, timeout: 2 });
+                await assert.rejects(captureFrames(ctx, { count: 1, budgetMs: 5000 }), /Verified TLS frame capture is unavailable/);
+                assert.strictEqual(requests, 0);
+                const { basicProbe } = require("../../../server/monitor-types/rtsp/basic-probe");
+                await assert.rejects(basicProbe({}, {}, ctx), /TLS.*certificate|self-signed/i);
+                const connect = tls.connect.bind(tls);
+                t.mock.method(tls, "connect", (options, callback) => connect({ ...options, ca: fs.readFileSync(certPath) }, callback));
+                await assert.rejects(basicProbe({}, {}, ctx), /hostname.*match/i);
+                assert.strictEqual(requests, 0, "Basic rejects a trusted certificate for the wrong host");
+                const hostnameCtx = { ...ctx, host: "localhost" };
+                const heartbeat = {};
+                await basicProbe({}, heartbeat, hostnameCtx);
+                assert.strictEqual(heartbeat.status, 1);
+                requests = 0;
+                await assert.rejects(captureFrames({ ...ctx, tlsVerify: false }, { count: 1, budgetMs: 5000 }), /404/);
+                assert.ok(requests > 0, "explicit ignore-TLS remains available");
+            } finally {
+                await new Promise((resolve) => server.close(resolve));
+            }
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("oversized coded frames fail before allocating full RGB planes", { skip }, async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-frame-limit-"));
+        const file = path.join(dir, "oversized.jpg");
+        try {
+            const sharp = require("sharp");
+            await sharp({ create: { width: 8192, height: 2049, channels: 3, background: "black" } }).jpeg().toFile(file);
+            await assert.rejects(runWorker({ input: file, format: null, options: {}, count: 1, maxDim: 640 }, 5000), /decode failed/);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
 });

@@ -15,7 +15,7 @@ const DEFAULT_PORTS = {
  * @returns {string} URL string with credentials scrubbed
  */
 function scrubUrlCredentialsForLog(value) {
-    return String(value).replace(/^([a-z][a-z0-9+\-.]*:\/\/)(?:[^/?#\s@]*@)+/i, "$1***@");
+    return String(value).replace(/([a-z][a-z0-9+\-.]*:\/\/)(?:[^/?#\s@]*@)+/gi, "$1***@");
 }
 
 /**
@@ -76,11 +76,10 @@ async function preflight(monitor) {
     try {
         url = new URL(monitor.url);
     } catch (e) {
-        // NFR-020: scrub any `user[:pass]@` portion from the input
-        // before echoing it back. Catches both `user:pass@host` and
-        // `user@host` shapes since either may carry sensitive data.
-        const scrubbed = scrubUrlCredentialsForLog(monitor.url);
-        throw new Error(messages.INVALID_URL(`${e.message} (input: ${scrubbed.substring(0, 80)})`));
+        // NFR-020: never include credentials in an error.
+        // Malformed userinfo can contain whitespace or other shapes a
+        // URL scrubber cannot reliably recognise. Never echo raw input.
+        throw new Error(messages.INVALID_URL("URL could not be parsed"));
     }
 
     const proto = url.protocol.replace(":", "").toLowerCase();
@@ -95,10 +94,7 @@ async function preflight(monitor) {
     }
 
     if (monitor.stream_protocol && proto !== monitor.stream_protocol) {
-        log.warn(
-            "rtsp",
-            `URL scheme ${proto} disagrees with selected protocol ${monitor.stream_protocol} on monitor ${monitor.id}; using URL scheme`
-        );
+        throw new Error(messages.INVALID_URL("URL scheme must match the selected stream protocol"));
     }
 
     const port = parseInt(url.port, 10) || DEFAULT_PORTS[proto];
@@ -108,13 +104,10 @@ async function preflight(monitor) {
     //   URL-embedded credentials are fallback when form fields are
     //   empty.
     //
-    // For RTSP/RTSPS we strip userinfo from ctx.url and pass creds via
-    // protocol-specific open options.
-    // For RTMP/RTMPS node-av expects userinfo on the URL itself, so we
-    // keep userinfo and ensure form credentials overwrite URL creds.
+    // Keep the context URL free of secrets for every protocol. The
+    // worker input builder restores userinfo only for native decoding.
     let username = monitor.basic_auth_user || "";
     let password = monitor.basic_auth_pass || "";
-    const hadUrlCredentials = Boolean(url.username || url.password);
     if (url.username || url.password) {
         if (username || password) {
             log.warn("rtsp", `URL credentials shadowed by form fields on monitor ${monitor.id}`);
@@ -130,15 +123,8 @@ async function preflight(monitor) {
         }
     }
 
-    if (proto === "rtsp" || proto === "rtsps") {
-        if (hadUrlCredentials) {
-            url.username = "";
-            url.password = "";
-        }
-    } else if (username || password) {
-        url.username = username;
-        url.password = password;
-    }
+    url.username = "";
+    url.password = "";
 
     // UI-007: ?rtsp_transport= URL parameter is ignored; the dedicated
     // transport selector is canonical. The UI shows a warning; we
@@ -150,6 +136,9 @@ async function preflight(monitor) {
 
     const tlsVerify = !monitor.getIgnoreTls?.() && (proto === "rtsps" || proto === "rtmps");
     const transport = (monitor.stream_transport || "tcp").toLowerCase();
+    if (!["tcp", "udp"].includes(transport) || (transport === "udp" && proto.startsWith("rtmp"))) {
+        throw new Error(messages.INVALID_URL("Invalid transport for the stream protocol"));
+    }
     const budgetMs = computeBudget(monitor);
     const timeoutMs = computeTimeout(monitor);
 

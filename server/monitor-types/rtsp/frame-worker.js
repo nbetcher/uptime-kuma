@@ -20,6 +20,7 @@
  */
 
 const JPEG_QUALITY = 75;
+const MAX_FRAME_PIXELS = 4096 * 4096;
 
 /**
  * Send a message to the parent and resolve once it has been handed to
@@ -82,25 +83,28 @@ async function capture(job) {
     let filter = null;
 
     try {
-        const openOptions = { options: job.options };
+        // Avoid findStreamInfo's implicit, unrestricted decoder. Codec
+        // headers arrive with the first video packet; our explicit
+        // decoder below enforces the pixel and thread limits.
+        const openOptions = { options: job.options, skipStreamInfo: true };
         if (job.format) {
             openOptions.format = job.format;
         }
         demuxer = await av.Demuxer.open(job.input, openOptions);
 
-        const videoStream = demuxer.video();
-        if (!videoStream) {
-            throw new Error("no video stream in input");
-        }
-        decoder = await av.Decoder.create(videoStream);
-        filter = av.FilterAPI.create("format=rgb24");
+        filter = av.FilterAPI.create(`scale=w='min(${job.maxDim},iw)':h='min(${job.maxDim},ih)':force_original_aspect_ratio=decrease,format=rgb24`);
 
-        for await (const frame of decoder.frames(demuxer.packets(videoStream.index))) {
+        for await (const frame of boundedFrames(demuxer, av, (value) => {
+            decoder = value;
+        })) {
             if (!frame) {
                 continue;
             }
             let rgbFrames = [];
             try {
+                if (frame.width * frame.height > MAX_FRAME_PIXELS) {
+                    throw new Error("video frame exceeds the 16 megapixel limit");
+                }
                 rgbFrames = await filter.processAll(frame);
                 for (const rgb of rgbFrames) {
                     if (sent >= job.count) {
@@ -126,8 +130,8 @@ async function capture(job) {
             }
         }
     } finally {
-        // Best effort only: the parent kills this process right after
-        // "done", so a slow close cannot hold anything up.
+        // Best effort only: the parent bounds cleanup with its remaining
+        // wall-clock budget, so a slow close cannot hold a slot forever.
         for (const res of [filter, decoder, demuxer]) {
             try {
                 await res?.close?.();
@@ -138,6 +142,60 @@ async function capture(job) {
     }
 
     await send({ type: "done" });
+}
+
+/**
+ * Read packets sequentially and decode only video with bounded native
+ * allocations. Dynamic streams (FLV/RTMP) are discovered by readFrame.
+ * @param {object} demuxer Open input
+ * @param {object} av node-av API
+ * @param {Function} onDecoder Registers the decoder for cleanup
+ * @yields {object} Decoded frame
+ */
+async function* boundedFrames(demuxer, av, onDecoder) {
+    const { Packet, FFmpegError, AVERROR_EAGAIN, AVERROR_EOF, AVMEDIA_TYPE_VIDEO } = require("node-av");
+    const context = demuxer.getFormatContext();
+    let decoder;
+    let videoIndex;
+    while (true) {
+        const packet = new Packet();
+        packet.alloc();
+        try {
+            const result = await context.readFrame(packet);
+            if (result === AVERROR_EAGAIN) {
+                await new Promise((resolve) => setTimeout(resolve, 10));
+                continue;
+            }
+            if (result === AVERROR_EOF) {
+                break;
+            }
+            FFmpegError.throwIfError(result, "read video packet");
+            const stream = context.streams.find((s) => s.index === packet.streamIndex);
+            if (stream?.codecpar.codecType !== AVMEDIA_TYPE_VIDEO) {
+                continue;
+            }
+            if (!decoder) {
+                if (stream.codecpar.width * stream.codecpar.height > MAX_FRAME_PIXELS) {
+                    throw new Error("video frame exceeds the 16 megapixel limit");
+                }
+                decoder = await av.Decoder.create(stream, {
+                    threadCount: 2,
+                    options: { max_pixels: String(MAX_FRAME_PIXELS) },
+                });
+                onDecoder(decoder);
+                videoIndex = stream.index;
+            }
+            if (packet.streamIndex === videoIndex) {
+                yield* decoder.frames(packet);
+            }
+        } finally {
+            packet.free();
+        }
+    }
+    if (!decoder) {
+        throw new Error("no video stream in input");
+    }
+    yield* decoder.frames(null);
 }
 
 process.once("message", async (msg) => {

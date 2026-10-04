@@ -27,6 +27,7 @@ const MIN_JPEG_SIZE = 128;
 const MAX_JPEG_SIZE = 5 * 1024 * 1024;
 const MIN_DIM = 64;
 const MAX_DIM = 16384;
+const MAX_INPUT_PIXELS = 4096 * 4096;
 
 const SOBEL_X_KERNEL = {
     width: 3,
@@ -70,7 +71,7 @@ async function validateJpegStructure(buf) {
     }
     let meta;
     try {
-        meta = await sharp(buf).metadata();
+        meta = await sharp(buf, { limitInputPixels: MAX_INPUT_PIXELS }).metadata();
     } catch (e) {
         throw new Error(messages.FRAME_INVALID(`sharp metadata: ${e.message}`));
     }
@@ -246,7 +247,7 @@ async function canonicalize(inputBuf, opts = {}) {
     // would *add* it back. The mozjpeg re-encode below sanitises
     // any malformed JFIF chunks an attacker may have crafted
     // (NFR-023).
-    return sharp(inputBuf)
+    return sharp(inputBuf, { limitInputPixels: MAX_INPUT_PIXELS })
         .rotate() // honour EXIF orientation before stripping
         .resize(maxDim, maxDim, { fit: "inside", withoutEnlargement: true })
         .jpeg({ quality, mozjpeg: true })

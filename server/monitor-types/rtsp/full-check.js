@@ -1,7 +1,6 @@
 const { UP, log } = require("../../../src/util");
 const { messages } = require("./messages");
 const { captureFrames } = require("./frame-capture");
-const { verifyTlsEndpoint } = require("./basic-probe");
 const { validateJpegStructure, fingerprint, distance, FP_TOTAL_BITS } = require("./image-pipeline");
 const { getFingerprints, persistFrameImage } = require("./reference-store");
 
@@ -26,8 +25,6 @@ async function run(monitor, heartbeat, ctx) {
     if (!refs.day || (separate && !refs.night)) {
         throw new Error(messages.MISSING_REFERENCE());
     }
-
-    await verifyTlsEndpoint({ ...ctx, timeoutMs: Math.min(ctx.timeoutMs, ctx.budgetMs) });
 
     const capture = await captureFrames(ctx, {
         count: 1,

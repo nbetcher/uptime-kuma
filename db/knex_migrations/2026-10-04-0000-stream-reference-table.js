@@ -13,28 +13,52 @@
 
 const SLOTS = ["day", "night"];
 
+/**
+ * Page image rows by primary key so an upgrade/rollback never loads
+ * every camera reference into memory at once.
+ * @param {object} query Knex query builder
+ * @yields {object} Row
+ */
+async function* imageRows(query) {
+    let lastId = 0;
+    while (true) {
+        const rows = await query.clone().where("id", ">", lastId).orderBy("id").limit(100);
+        if (!rows.length) {
+            return;
+        }
+        for (const row of rows) {
+            yield row;
+        }
+        lastId = rows[rows.length - 1].id;
+    }
+}
+
 exports.up = async function (knex) {
-    await knex.schema.createTable("monitor_stream_reference", function (table) {
-        table.increments("id");
-        table
-            .integer("monitor_id")
-            .unsigned()
-            .notNullable()
-            .references("id")
-            .inTable("monitor")
-            .onDelete("CASCADE")
-            .onUpdate("CASCADE");
-        table.string("slot", 8).notNullable();
-        table.specificType("image_blob", "mediumblob").notNullable();
-        table.binary("fingerprint", 16).notNullable();
-        table.text("source_url").nullable();
-        table.datetime("updated_at").notNullable();
-        table.unique(["monitor_id", "slot"]);
-    });
+    // MariaDB commits DDL even when the later backfill fails. A retry
+    // must resume, rather than fail forever with "table already exists".
+    if (!(await knex.schema.hasTable("monitor_stream_reference"))) {
+        await knex.schema.createTable("monitor_stream_reference", function (table) {
+            table.increments("id");
+            table
+                .integer("monitor_id")
+                .unsigned()
+                .notNullable()
+                .references("id")
+                .inTable("monitor")
+                .onDelete("CASCADE")
+                .onUpdate("CASCADE");
+            table.string("slot", 8).notNullable();
+            table.specificType("image_blob", "mediumblob").notNullable();
+            table.binary("fingerprint", 16).notNullable();
+            table.text("source_url").nullable();
+            table.datetime("updated_at").notNullable();
+            table.unique(["monitor_id", "slot"]);
+        });
+    }
 
     const now = new Date().toISOString().replace("T", " ").replace("Z", "");
     for (const slot of SLOTS) {
-        const rows = await knex("monitor")
+        const query = knex("monitor")
             .select(
                 "id",
                 `stream_reference_${slot}_blob as blob`,
@@ -43,15 +67,24 @@ exports.up = async function (knex) {
             )
             .whereNotNull(`stream_reference_${slot}_blob`)
             .whereNotNull(`stream_reference_${slot}_hash`);
-        for (const row of rows) {
-            await knex("monitor_stream_reference").insert({
-                monitor_id: row.id,
-                slot,
-                image_blob: row.blob,
-                fingerprint: row.hash,
-                source_url: row.url,
-                updated_at: now,
-            });
+        for await (const row of imageRows(query)) {
+            try {
+                await knex("monitor_stream_reference")
+                    .insert({
+                        monitor_id: row.id,
+                        slot,
+                        image_blob: row.blob,
+                        fingerprint: row.hash,
+                        source_url: row.url,
+                        updated_at: now,
+                    })
+                    .onConflict(["monitor_id", "slot"])
+                    .ignore();
+            } catch {
+                // Knex's rendered SQL includes both private camera images
+                // and source URL passwords. Do not forward that error.
+                throw new Error(`Could not migrate stream reference for monitor ${row.id}`);
+            }
         }
     }
 
@@ -66,24 +99,29 @@ exports.up = async function (knex) {
 };
 
 exports.down = async function (knex) {
-    const rows = await knex("monitor_stream_reference").select(
+    const query = knex("monitor_stream_reference").select(
+        "id",
         "monitor_id",
         "slot",
         "image_blob",
         "fingerprint",
         "source_url"
     );
-    for (const row of rows) {
+    for await (const row of imageRows(query)) {
         if (!SLOTS.includes(row.slot)) {
             continue;
         }
-        await knex("monitor")
-            .where("id", row.monitor_id)
-            .update({
-                [`stream_reference_${row.slot}_blob`]: row.image_blob,
-                [`stream_reference_${row.slot}_hash`]: row.fingerprint,
-                [`stream_reference_${row.slot}_url`]: row.source_url,
-            });
+        try {
+            await knex("monitor")
+                .where("id", row.monitor_id)
+                .update({
+                    [`stream_reference_${row.slot}_blob`]: row.image_blob,
+                    [`stream_reference_${row.slot}_hash`]: row.fingerprint,
+                    [`stream_reference_${row.slot}_url`]: row.source_url,
+                });
+        } catch {
+            throw new Error(`Could not restore stream reference for monitor ${row.monitor_id}`);
+        }
     }
     await knex.schema.dropTableIfExists("monitor_stream_reference");
 };

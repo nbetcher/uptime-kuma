@@ -4,6 +4,7 @@ const dayjs = require("dayjs");
 // own (tests, scripts); extend() is idempotent.
 dayjs.extend(require("dayjs/plugin/utc"));
 const { log } = require("../../../src/util");
+const { dbErrorMessage } = require("./db-error");
 
 /**
  * Write an audit record for a reference-image action. Per OP-007 /
@@ -12,9 +13,8 @@ const { log } = require("../../../src/util");
  * When `args.trx` is provided, the INSERT runs on that transaction and
  * propagates errors so the caller can roll back atomically with its
  * blob write. When omitted, runs standalone and swallows errors with a
- * warn — the legacy "audit failure must not block user action"
- * posture, used by the delete path where the data change is already
- * a single statement.
+ * warn. Reference uploads and deletes supply a transaction so their
+ * data changes and audit record either both succeed or both roll back.
  * @param {object} args Audit fields
  * @param {number} args.monitorId Monitor ID
  * @param {string} args.slot 'day' | 'night' | 'single'
@@ -46,7 +46,7 @@ async function recordAudit(args) {
         await R.exec(sql, bindings);
     } catch (e) {
         // An audit failure should not block the user's action.
-        log.warn("rtsp", `recordAudit failed: ${e.message}`);
+        log.warn("rtsp", dbErrorMessage(e));
     }
 }
 

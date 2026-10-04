@@ -46,6 +46,20 @@ function validateStreamMonitor(monitor, references) {
         throw new Error("RTSP/RTMP monitors require a URL");
     }
 
+    let protocol;
+    try {
+        const url = new URL(monitor.url);
+        protocol = url.protocol.slice(0, -1).toLowerCase();
+        if (!url.hostname || !VALID_PROTOCOLS.includes(protocol)) {
+            throw new Error();
+        }
+    } catch {
+        throw new Error("A valid RTSP/RTMP URL with a hostname is required");
+    }
+    if (monitor.streamProtocol && VALID_PROTOCOLS.includes(monitor.streamProtocol) && monitor.streamProtocol !== protocol) {
+        throw new Error("URL scheme must match the selected stream protocol");
+    }
+
     if (monitor.streamProtocol && !VALID_PROTOCOLS.includes(monitor.streamProtocol)) {
         throw new Error(`Invalid streamProtocol: ${monitor.streamProtocol}`);
     }
@@ -59,7 +73,7 @@ function validateStreamMonitor(monitor, references) {
     // rather than silently ignore the transport at runtime.
     if (
         monitor.streamTransport === "udp" &&
-        (monitor.streamProtocol === "rtmp" || monitor.streamProtocol === "rtmps")
+        (protocol === "rtmp" || protocol === "rtmps")
     ) {
         throw new Error("RTMP is TCP-only; UDP transport is not supported (FR-026)");
     }

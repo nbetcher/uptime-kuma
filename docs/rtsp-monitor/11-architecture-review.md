@@ -4,6 +4,12 @@
 the `sync-upstream-rtsp-docker.yml` release workflow on `master`.
 **Fixes:** branch `rtsp-monitor-architecture`.
 
+**Follow-up:** [12-security-and-correctness-audit.md](./12-security-and-correctness-audit.md)
+audits that architecture branch at `d13e960`. Its fixes supersede the TLS
+precheck approach in §2.3: verified TLS frame capture now fails closed because
+the decoder cannot reliably verify hostnames. Basic verification and explicit
+Ignore TLS remain available. The text below records the earlier implementation.
+
 This review supersedes parts of [10-high-level-design.md](./10-high-level-design.md):
 §3.1/§4.2 (reference storage), §5.6–§5.8 and §6.1–§6.2 (frame capture,
 libav options, concurrency), and §12.3 (TLS posture in Enhanced/Full).

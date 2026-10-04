@@ -29,6 +29,7 @@ exports.messages = {
     CONNECTION_RESET: () => "connection reset by peer",
     TLS_HOSTNAME_MISMATCH: (got) => `TLS hostname does not match certificate (got ${got})`,
     TLS_CERT_INVALID: (reason) => `TLS certificate invalid: ${reason}`,
+    VERIFIED_TLS_CAPTURE_UNAVAILABLE: "Verified TLS frame capture is unavailable: the decoder cannot reliably verify hostnames. Use Basic mode for verified TLS; Ignore TLS explicitly disables certificate verification.",
 
     // === Enhanced ===
     INSUFFICIENT_FRAMES: (got, wanted) => `only ${got}/${wanted} valid frames captured`,

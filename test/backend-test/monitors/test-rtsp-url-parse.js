@@ -24,6 +24,9 @@ function stub(overrides) {
 }
 
 describe("url-parse preflight", () => {
+    test("rejects a secure protocol selection paired with a plaintext URL", async () => {
+        await assert.rejects(preflight(stub({ url: "rtsp://camera/live", stream_protocol: "rtsps" })), /must match/);
+    });
     test("parses an RTSP URL with default port", async () => {
         const ctx = await preflight(stub({ url: "rtsp://example.com/stream" }));
         assert.strictEqual(ctx.protocol, "rtsp");
@@ -71,7 +74,7 @@ describe("url-parse preflight", () => {
         assert.strictEqual(ctx.password, "urlpass");
     });
 
-    test("preserves RTMP credentials on URL for decode auth", async () => {
+    test("keeps RTMP credentials separate from the context URL", async () => {
         const ctx = await preflight(
             stub({
                 url: "rtmp://urluser:urlpass@example.com/live/stream",
@@ -79,7 +82,7 @@ describe("url-parse preflight", () => {
         );
         assert.strictEqual(ctx.username, "urluser");
         assert.strictEqual(ctx.password, "urlpass");
-        assert.match(ctx.url, /^rtmp:\/\/urluser:urlpass@example\.com\//);
+        assert.strictEqual(ctx.url, "rtmp://example.com/live/stream");
     });
 
     test("RTMP form credentials override URL credentials", async () => {
@@ -92,7 +95,7 @@ describe("url-parse preflight", () => {
         );
         assert.strictEqual(ctx.username, "formuser");
         assert.strictEqual(ctx.password, "formpass");
-        assert.match(ctx.url, /^rtmp:\/\/formuser:formpass@example\.com\//);
+        assert.strictEqual(ctx.url, "rtmp://example.com/live/stream");
         assert.doesNotMatch(ctx.url, /urluser/);
     });
 
@@ -147,6 +150,10 @@ describe("computeBudget", () => {
 });
 
 describe("scrubUrlCredentialsForLog", () => {
+    test("scrubs every embedded URL in native error text", () => {
+        const out = scrubUrlCredentialsForLog("open rtsps://u:pw@camera/a; redirect rtsp://u:pw@camera/b");
+        assert.doesNotMatch(out, /u:pw/);
+    });
     test("scrubs credentials before log/error echo", () => {
         assert.strictEqual(
             scrubUrlCredentialsForLog("rtsp://user:pass@example.com/stream"),

@@ -131,12 +131,10 @@ function remainingMs(ctx, startTime) {
  * Verify the TLS certificate chain and hostname of an RTSPS/RTMPS
  * endpoint with Node's TLS stack, then disconnect.
  *
- * Enhanced/Full mode needs this because libav does not verify peer
- * certificates by default (`tls_verify` defaults to 0), and options
- * given to the demuxer are not guaranteed to reach the TLS connection
- * the RTSP demuxer opens internally. The check runs against the same
- * host:port immediately before the decode session. No-op for plaintext
- * protocols or when the monitor ignores TLS errors.
+ * This only verifies this socket; it must never authorise a different
+ * decoder connection. Enhanced/Full verified TLS currently fail closed
+ * because the native backend cannot reliably verify hostnames. No-op
+ * for plaintext protocols or when the monitor ignores TLS errors.
  * @param {object} ctx Preflight context
  * @returns {Promise<void>}
  */
@@ -263,7 +261,7 @@ function parseRtspResponse(buf, requestCSeq) {
         throw new Error(messages.RTSP_NOT_SPOKEN());
     }
     const head = buf.toString("utf8", 0, Math.min(buf.length, MAX_RESPONSE_BYTES));
-    if (!head.startsWith("RTSP/")) {
+    if (!head.startsWith("RTSP/") || !head.includes("\r\n\r\n")) {
         throw new Error(messages.RTSP_NOT_SPOKEN());
     }
     const firstLineEnd = head.indexOf("\r\n");
@@ -279,7 +277,7 @@ function parseRtspResponse(buf, requestCSeq) {
     const statusCode = parseInt(match[1], 10);
 
     // CSeq must echo the request CSeq value
-    const cseqMatch = head.match(/[\r\n]CSeq:\s*(\d+)/i);
+    const cseqMatch = head.match(/\r\nCSeq:[ \t]*(\d+)[ \t]*\r\n/i);
     if (!cseqMatch || parseInt(cseqMatch[1], 10) !== requestCSeq) {
         throw new Error(messages.RTSP_NOT_SPOKEN());
     }
@@ -383,7 +381,7 @@ async function probeRtmp(monitor, heartbeat, ctx) {
         }
     }
 
-    if (!s0s1 || s0s1.length < 1 || s0s1[0] !== 0x03) {
+    if (!s0s1 || s0s1.length !== RTMP_HANDSHAKE_BYTES || s0s1[0] !== 0x03) {
         throw new Error(messages.RTMP_NOT_SPOKEN());
     }
 

@@ -8,6 +8,7 @@ const { log } = require("../../../src/util");
 const { canonicalize, fingerprint, packFingerprint, thumbnailize } = require("./image-pipeline");
 const { fetchUrl } = require("./ssrf-guard");
 const { recordAudit } = require("./audit");
+const { dbErrorMessage } = require("./db-error");
 
 const VALID_SLOTS = ["day", "night", "single"];
 
@@ -122,7 +123,7 @@ async function persistWithAudit(args) {
                 /* ignored — original error is the meaningful one */
             }
         }
-        throw e;
+        throw new Error(dbErrorMessage(e));
     }
 }
 
@@ -251,18 +252,20 @@ async function refreshUrl(args) {
  */
 async function deleteSlot(args) {
     const { monitorId, slot, userId } = args;
-    await R.exec("DELETE FROM monitor_stream_reference WHERE monitor_id = ? AND slot = ?", [
-        monitorId,
-        storedSlot(slot),
-    ]);
-    await recordAudit({
-        monitorId,
-        slot,
-        source: "delete",
-        byteSize: 0,
-        sha256: null,
-        userId,
-    });
+    const stored = storedSlot(slot);
+    const trx = await R.begin();
+    try {
+        await trx.exec("DELETE FROM monitor_stream_reference WHERE monitor_id = ? AND slot = ?", [monitorId, stored]);
+        await recordAudit({ monitorId, slot, source: "delete", byteSize: 0, sha256: null, userId, trx });
+        await trx.commit();
+    } catch (e) {
+        try {
+            await trx.rollback();
+        } catch {
+            /* preserve the original failure */
+        }
+        throw new Error(dbErrorMessage(e));
+    }
 }
 
 /**
@@ -367,7 +370,7 @@ async function persistFrameImage(args) {
                  SELECT id FROM (
                    SELECT id FROM monitor_stream_down_image
                    WHERE monitor_id = ? AND kind = ?
-                   ORDER BY captured_at DESC
+                   ORDER BY captured_at DESC, id DESC
                    LIMIT ?
                  ) AS keep
                )`,
@@ -382,7 +385,7 @@ async function persistFrameImage(args) {
                 /* ignored */
             }
         }
-        log.warn("rtsp", `persistFrameImage failed: ${e.message}`);
+        log.warn("rtsp", dbErrorMessage(e));
     }
 }
 

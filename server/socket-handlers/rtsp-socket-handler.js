@@ -65,7 +65,7 @@ function monitorHostname(bean) {
         return null;
     }
     try {
-        return new URL(bean.url).hostname;
+        return new URL(bean.url).hostname.replace(/^\[(.*)\]$/, "$1");
     } catch {
         return null;
     }
@@ -348,6 +348,8 @@ module.exports.rtspSocketHandler = function (socket) {
             if (!formMonitor || formMonitor.type !== "rtsp") {
                 throw new Error("test-stream is for type=rtsp only");
             }
+            const { validateStreamMonitor } = require("../monitor-types/rtsp/validation");
+            validateStreamMonitor(formMonitor, null);
             // A saved monitor's id is only reused after an ownership
             // check: it selects which stored references Full mode
             // compares against. The type is not checked, so a monitor
