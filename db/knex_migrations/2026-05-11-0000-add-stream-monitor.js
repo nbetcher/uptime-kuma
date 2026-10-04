@@ -24,20 +24,20 @@ exports.up = function (knex) {
         })
         .createTable("monitor_reference_audit", function (table) {
             table.increments("id");
-            table.integer("monitor_id").notNullable()
+            table.integer("monitor_id").unsigned().notNullable()
                 .references("id").inTable("monitor").onDelete("CASCADE");
             table.string("slot", 8).notNullable();
             table.string("source", 16).notNullable();
             table.integer("byte_size").notNullable().defaultTo(0);
             table.binary("sha256").nullable();
-            table.integer("user_id").nullable()
+            table.integer("user_id").unsigned().nullable()
                 .references("id").inTable("user").onDelete("SET NULL");
             table.timestamp("created_at").defaultTo(knex.fn.now());
             table.index("monitor_id");
         })
         .createTable("monitor_stream_down_image", function (table) {
             table.increments("id");
-            table.integer("monitor_id").notNullable()
+            table.integer("monitor_id").unsigned().notNullable()
                 .references("id").inTable("monitor").onDelete("CASCADE");
             table.string("kind", 8).notNullable().defaultTo("down");
             table.timestamp("captured_at").defaultTo(knex.fn.now());

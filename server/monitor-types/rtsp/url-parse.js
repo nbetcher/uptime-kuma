@@ -88,6 +88,12 @@ async function preflight(monitor) {
         throw new Error(messages.UNKNOWN_PROTOCOL(proto));
     }
 
+    // "rtsp://" (the form default) parses with an empty host, which
+    // net.connect() would silently turn into localhost.
+    if (!url.hostname) {
+        throw new Error(messages.INVALID_URL("host is required"));
+    }
+
     if (monitor.stream_protocol && proto !== monitor.stream_protocol) {
         log.warn(
             "rtsp",
@@ -150,7 +156,8 @@ async function preflight(monitor) {
     return {
         url: url.toString(),
         protocol: proto,
-        host: url.hostname,
+        // WHATWG keeps IPv6 literals bracketed; net/tls want them bare.
+        host: url.hostname.replace(/^\[(.*)\]$/, "$1"),
         port,
         path: url.pathname + (url.search || ""),
         username,

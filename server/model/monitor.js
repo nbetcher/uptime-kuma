@@ -982,16 +982,12 @@ class Monitor extends BeanModel {
                 // SkipCheckError: do not persist a heartbeat — caller
                 // (e.g. RTSP concurrency-bucket saturation per
                 // NFR-004) wants this beat dropped, not reported as
-                // DOWN. We log, restore the previous status, and
-                // jump to the bottom of the loop to schedule the
-                // next beat.
+                // DOWN. We log and jump to the bottom of the loop to
+                // schedule the next beat, leaving the retry count
+                // untouched.
                 if (error?.name === "SkipCheckError") {
                     log.warn("monitor", `[${this.name}] check skipped: ${error.message}`);
                     skipBeat = true;
-                    if (previousBeat) {
-                        bean.status = previousBeat.status;
-                        bean.msg = `skipped: ${error.message}`;
-                    }
                 } else if (error?.name === "CanceledError") {
                     bean.msg = `timeout by AbortSignal (${this.timeout}s)`;
                 } else {
@@ -1002,9 +998,12 @@ class Monitor extends BeanModel {
                     await this.saveResponseData(bean, error.response.data);
                 }
 
-                // If UP come in here, it must be upside down mode
-                // Just reset the retries
-                if (this.isUpsideDown() && bean.status === UP) {
+                // A skipped beat never ran, so it must not consume a retry.
+                if (skipBeat) {
+                    // Nothing to count
+                } else if (this.isUpsideDown() && bean.status === UP) {
+                    // If UP come in here, it must be upside down mode
+                    // Just reset the retries
                     retries = 0;
                 } else if (this.type === "json-query" && this.retry_only_on_status_code_failure) {
                     // For json-query monitors with retry_only_on_status_code_failure enabled,

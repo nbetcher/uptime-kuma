@@ -12,6 +12,16 @@ const VALID_TRANSPORTS = ["tcp", "udp"];
 const VALID_MODES = ["basic", "enhanced", "full"];
 
 /**
+ * A cleared `<input type="number" v-model.number>` sends "" rather than
+ * null, so treat it like an unset optional field.
+ * @param {unknown} v Form value
+ * @returns {boolean} True when the field was left empty
+ */
+function isUnset(v) {
+    return v === undefined || v === null || v === "";
+}
+
+/**
  * Validate the stream-monitor-specific fields of a monitor payload
  * coming from the frontend.
  *
@@ -59,21 +69,21 @@ function validateStreamMonitor(monitor, references) {
         throw new Error(`Invalid streamMode: ${mode}`);
     }
 
-    if (monitor.streamFrameCount !== undefined && monitor.streamFrameCount !== null) {
+    if (!isUnset(monitor.streamFrameCount)) {
         const n = parseInt(monitor.streamFrameCount, 10);
         if (!Number.isFinite(n) || n < 2 || n > 15) {
             throw new Error("streamFrameCount must be between 2 and 15");
         }
     }
 
-    if (monitor.streamMatchThreshold !== undefined && monitor.streamMatchThreshold !== null) {
+    if (!isUnset(monitor.streamMatchThreshold)) {
         const t = parseInt(monitor.streamMatchThreshold, 10);
         if (!Number.isFinite(t) || t < 0 || t > 128) {
             throw new Error("streamMatchThreshold must be between 0 and 128");
         }
     }
 
-    if (monitor.streamWallClockBudgetSec !== undefined && monitor.streamWallClockBudgetSec !== null) {
+    if (!isUnset(monitor.streamWallClockBudgetSec)) {
         const b = parseInt(monitor.streamWallClockBudgetSec, 10);
         if (!Number.isFinite(b) || b < 5 || b > 30) {
             throw new Error("streamWallClockBudgetSec must be between 5 and 30");
@@ -131,9 +141,11 @@ function applyStreamFieldsToBean(bean, monitor) {
     bean.stream_protocol = monitor.streamProtocol || null;
     bean.stream_transport = monitor.streamTransport || null;
     bean.stream_mode = monitor.streamMode || null;
-    bean.stream_frame_count = monitor.streamFrameCount ?? null;
-    bean.stream_wall_clock_budget_sec = monitor.streamWallClockBudgetSec ?? null;
-    bean.stream_match_threshold = monitor.streamMatchThreshold ?? null;
+    bean.stream_frame_count = isUnset(monitor.streamFrameCount) ? null : monitor.streamFrameCount;
+    bean.stream_wall_clock_budget_sec = isUnset(monitor.streamWallClockBudgetSec)
+        ? null
+        : monitor.streamWallClockBudgetSec;
+    bean.stream_match_threshold = isUnset(monitor.streamMatchThreshold) ? null : monitor.streamMatchThreshold;
     bean.stream_separate_day_night =
         monitor.streamSeparateDayNight === null || monitor.streamSeparateDayNight === undefined
             ? null

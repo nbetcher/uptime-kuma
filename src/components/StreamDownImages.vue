@@ -91,15 +91,10 @@ export default {
                 this.images = res.images || [];
             });
         },
-        formatTimestamp(iso) {
-            if (!iso) {
-                return "";
-            }
-            try {
-                return new Date(iso).toLocaleString();
-            } catch {
-                return iso;
-            }
+        formatTimestamp(value) {
+            // captured_at is a zone-less UTC string ("YYYY-MM-DD HH:mm:ss.SSS");
+            // new Date() would read it as local time (or Invalid Date in Safari).
+            return value ? this.$root.datetime(value) : "";
         },
         downImageAlt(img) {
             return this.$t("RTSP DOWN Frame Alt", [this.formatTimestamp(img.capturedAt)]);

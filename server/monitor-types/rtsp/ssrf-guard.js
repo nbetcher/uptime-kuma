@@ -282,14 +282,12 @@ async function fetchUrl(urlStr, opts = {}) {
     return new Promise((resolve, reject) => {
         const lib = url.protocol === "https:" ? https : http;
         const port = url.port || (url.protocol === "https:" ? 443 : 80);
-        // IPv6 literals must be bracketed in the `host` field;
-        // `servername` stays as the bare hostname for SNI/cert
-        // validation.
-        const hostForConnect = ip.includes(":") ? `[${ip}]` : ip;
-
+        // Connect to the pinned IP. Node takes IPv6 literals bare in
+        // `host` (a bracketed "[::1]" goes to DNS and fails);
+        // `servername` stays as the hostname for SNI/cert validation.
         const req = lib.request(
             {
-                host: hostForConnect,
+                host: ip,
                 port,
                 path: url.pathname + url.search,
                 headers: {

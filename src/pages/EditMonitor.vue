@@ -1859,6 +1859,7 @@
                                     monitor.type === 'keyword' ||
                                     monitor.type === 'json-query' ||
                                     monitor.type === 'redis' ||
+                                    monitor.type === 'rtsp' ||
                                     (monitor.type === 'globalping' && monitor.subtype === 'http')
                                 "
                                 class="my-3 form-check"
@@ -1871,7 +1872,11 @@
                                     value=""
                                 />
                                 <label class="form-check-label" for="ignore-tls">
-                                    {{ monitor.type === "redis" ? $t("ignoreTLSErrorGeneral") : $t("ignoreTLSError") }}
+                                    {{
+                                        monitor.type === "redis" || monitor.type === "rtsp"
+                                            ? $t("ignoreTLSErrorGeneral")
+                                            : $t("ignoreTLSError")
+                                    }}
                                 </label>
                             </div>
 
@@ -3835,6 +3840,14 @@ message HealthCheckResponse {
 
         "monitor.grpcUrl"() {
             this.checkDomain();
+        },
+
+        "monitor.streamProtocol"(protocol) {
+            // RTMP is TCP-only and the transport selector is hidden for it,
+            // so a leftover "udp" would make the save fail with no way to fix it.
+            if (protocol === "rtmp" || protocol === "rtmps") {
+                this.monitor.streamTransport = "tcp";
+            }
         },
 
         "monitor.type"(newType, oldType) {

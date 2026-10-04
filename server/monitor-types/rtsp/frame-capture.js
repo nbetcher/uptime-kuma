@@ -49,9 +49,13 @@ function buildLibavInput(ctx) {
     const url = new URL(ctx.url);
     if (ctx.username || ctx.password) {
         // The URL setters percent-encode reserved characters; libav
-        // decodes userinfo before building the Authorization header.
-        url.username = ctx.username || "";
-        url.password = ctx.password || "";
+        // decodes RTSP userinfo before building the Authorization
+        // header. The setters leave "%" alone, so escape it for RTSP or
+        // a password like "a%41b" would reach the camera as "aAb".
+        const isRtsp = ctx.protocol === "rtsp" || ctx.protocol === "rtsps";
+        const esc = (s) => (isRtsp ? (s || "").replace(/%/g, "%25") : s || "");
+        url.username = esc(ctx.username);
+        url.password = esc(ctx.password);
     }
 
     const ioTimeoutUs = String(Math.max(1000, ctx.timeoutMs) * 1000);
