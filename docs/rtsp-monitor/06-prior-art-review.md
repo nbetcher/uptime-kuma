@@ -255,7 +255,7 @@ Treat as a checklist for any code work that follows this planning phase:
 | 7 | Translations only in `en.json` | UI-006 (note in commentary) |
 | 8 | Placeholder/help text on every non-obvious field | UI-002 |
 | 9 | Rebase cleanly | Process item, not a design item — flagged in **[08-open-questions.md](./08-open-questions.md)** §6 |
-| 10 | "Wall of Shame" for AI slop — `AGENTS.md` | NFR-050 |
+| 10 | "Wall of Shame" for unreviewed contributions — `AGENTS.md` | NFR-050 |
 
 ## 8. The scope-discipline strategy: three PRs
 

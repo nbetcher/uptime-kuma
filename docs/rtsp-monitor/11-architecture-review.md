@@ -213,7 +213,7 @@ the browser.
 `rtsp-monitor` rewrites `louislam` → `nbetcher` across 30+ files
 (workflows, `extra/`, Dockerfiles, `package.json`) alongside the feature.
 Every upstream release therefore conflicts in files the feature never
-needed to touch, which is why the sync workflow needs AI conflict
+needed to touch, which is why the sync workflow needs automated conflict
 resolution at all. Keep `rtsp-monitor` as the pure feature delta and apply
 branding at build time — the workflow already does exactly that for the
 Docker base images.

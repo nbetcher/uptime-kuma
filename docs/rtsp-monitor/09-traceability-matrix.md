@@ -46,7 +46,7 @@ not a single REQ-ID; "Won't" items have explicit owner sign-off in
 | Translations only in `en.json`; rest via Weblate | #5954 | UI-006 commentary | 04, 06 |
 | Placeholders / help on every non-obvious field | #5954 | UI-002, UI-009 | 04 |
 | Clean rebase before re-submission | #5954 | Process item, three-PR plan | 06 |
-| AGENTS.md compliance for AI-assisted work | upstream policy | NFR-050 | 04 |
+| AGENTS.md contribution-policy compliance | upstream policy | NFR-050 | 04 |
 
 ## C. Requirement → original-brief origin
 

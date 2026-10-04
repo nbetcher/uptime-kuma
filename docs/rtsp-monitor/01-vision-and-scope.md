@@ -89,7 +89,7 @@ worth honouring:
 
 - Documentation is permitted (this work).
 - Implementation work that follows must be authored, reviewed, and tested by
-  the human; AI can assist but not author.
+  the human; tooling can assist but not author.
 - Any upstream PR description must be written by the human, not generated.
 
 This is not a blocker for the planning phase. It is, however, a constraint
