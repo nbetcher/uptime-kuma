@@ -11,7 +11,7 @@ on:
         type: boolean
         default: false
       confirm_overwrite_tag:
-        description: "Required with force_publish; enter the exact SHA-suffixed tag to overwrite (e.g. 2.6.3-rtsp-1c81f0f)"
+        description: "Required with force_publish; enter the exact SHA-suffixed tag to overwrite (e.g. 2.5.5-rtsp-1c81f0f)"
         required: false
         type: string
         default: ""
@@ -20,6 +20,16 @@ on:
         required: false
         type: boolean
         default: false
+      ai_resolve_conflicts:
+        description: "Resolve merge conflicts with Gemini (needs the GEMINI_API_KEY secret); AI-resolved merges are never published in the same run"
+        required: false
+        type: boolean
+        default: true
+      gemini_model:
+        description: "Gemini model used for conflict resolution"
+        required: false
+        type: string
+        default: "gemini-flash-latest"
 
 permissions: {}
 
@@ -49,6 +59,7 @@ jobs:
       short_sha: ${{ steps.docker_tags.outputs.short_sha }}
       source_revision: ${{ steps.build_source.outputs.source_revision }}
       sync_branch: ${{ steps.merge.outputs.sync_branch }}
+      ai_resolved: ${{ steps.merge.outputs.ai_resolved }}
       upstream_tag: ${{ steps.release.outputs.upstream_tag }}
 
     steps:
@@ -96,6 +107,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_TAG: ${{ steps.release.outputs.upstream_tag }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.gemini_model || 'gemini-flash-latest' }}
+          AI_RESOLVE_CONFLICTS: ${{ github.event_name != 'workflow_dispatch' || inputs.ai_resolve_conflicts }}
         run: |
           set -euo pipefail
 
@@ -123,10 +137,213 @@ jobs:
             git switch -C "${sync_branch}" "origin/${sync_branch}"
           else
             git switch -C "${sync_branch}" "origin/${RTSP_BRANCH}"
+            git config merge.conflictStyle diff3
             if ! git merge --no-edit "refs/tags/${UPSTREAM_TAG}"; then
-              git merge --abort || true
-              echo "::error::Upstream ${UPSTREAM_TAG} does not merge cleanly into ${RTSP_BRANCH}. Resolve the conflict locally on ${RTSP_BRANCH}, push the resolution, then rerun this workflow."
-              exit 1
+              if [ "${AI_RESOLVE_CONFLICTS}" != "true" ] || [ -z "${GEMINI_API_KEY}" ]; then
+                git merge --abort || true
+                echo "::error::Upstream ${UPSTREAM_TAG} does not merge cleanly into ${RTSP_BRANCH}. Resolve the conflict locally on ${RTSP_BRANCH}, push the resolution, then rerun this workflow (or enable ai_resolve_conflicts with the GEMINI_API_KEY secret set)."
+                exit 1
+              fi
+
+              cat > "${RUNNER_TEMP}/resolve-conflicts.js" <<'NODE'
+          const fs = require("fs");
+          const { execFileSync } = require("child_process");
+
+          const apiKey = process.env.GEMINI_API_KEY;
+          const model = process.env.GEMINI_MODEL;
+          const upstreamTag = process.env.UPSTREAM_TAG;
+          const rtspBranch = process.env.RTSP_BRANCH;
+          const contextLines = 40;
+          const markerPattern = /^(<{7}|\|{7}|={7}|>{7})( |$)/m;
+
+          const git = (...args) => execFileSync("git", args, { encoding: "utf8" });
+
+          async function sleep(ms) {
+              await new Promise((r) => setTimeout(r, ms));
+          }
+
+          async function askGemini(prompt) {
+              const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+              const body = {
+                  contents: [{ role: "user", parts: [{ text: prompt }] }],
+                  generationConfig: {
+                      temperature: 0,
+                      responseMimeType: "application/json",
+                      responseSchema: {
+                          type: "OBJECT",
+                          properties: { resolution: { type: "STRING" } },
+                          required: ["resolution"],
+                      },
+                  },
+              };
+              for (let attempt = 1; attempt <= 4; attempt++) {
+                  let response;
+                  try {
+                      response = await fetch(url, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+                          body: JSON.stringify(body),
+                          signal: AbortSignal.timeout(180000),
+                      });
+                  } catch (error) {
+                      if (attempt === 4) throw error;
+                      await sleep((3 ** attempt) * 1000);
+                      continue;
+                  }
+                  if (response.ok) {
+                      const data = await response.json();
+                      const candidate = (data.candidates || [])[0];
+                      if (!candidate || candidate.finishReason !== "STOP") {
+                          throw new Error(`Gemini did not finish the response (finishReason: ${candidate ? candidate.finishReason : "none"})`);
+                      }
+                      const text = (candidate.content.parts || []).map((part) => part.text || "").join("");
+                      return JSON.parse(text).resolution;
+                  }
+                  if (attempt === 4 || ![429, 500, 502, 503, 504].includes(response.status)) {
+                      throw new Error(`Gemini request failed: ${response.status} ${await response.text()}`);
+                  }
+                  await sleep((3 ** attempt) * 1000);
+              }
+          }
+
+          async function resolveFile(path) {
+              const lines = fs.readFileSync(path, "utf8").split("\n");
+              const output = [];
+              let hunkCount = 0;
+
+              for (let i = 0; i < lines.length; i++) {
+                  if (!lines[i].startsWith("<<<<<<< ")) {
+                      output.push(lines[i]);
+                      continue;
+                  }
+
+                  const start = i;
+                  while (i < lines.length && !lines[i].startsWith(">>>>>>> ")) {
+                      i++;
+                  }
+                  if (i >= lines.length) {
+                      throw new Error(`${path}: unterminated conflict hunk at line ${start + 1}`);
+                  }
+
+                  const hunk = lines.slice(start, i + 1).join("\n");
+                  const before = lines.slice(Math.max(0, start - contextLines), start).join("\n");
+                  const after = lines.slice(i + 1, i + 1 + contextLines).join("\n");
+                  hunkCount++;
+
+                  const prompt = [
+                      `You are resolving a git merge conflict in the file \`${path}\` of Uptime Kuma.`,
+                      `OURS (the first section) is the fork branch \`${rtspBranch}\`, which adds an RTSP camera monitor type and fork-specific settings (Docker image and repository names use nbetcher/uptime-kuma instead of louislam/uptime-kuma).`,
+                      `The section after the ||||||| marker is the common ancestor (BASE).`,
+                      `THEIRS (after =======) is the upstream release ${upstreamTag}.`,
+                      "",
+                      "Merge rules:",
+                      "- Keep every upstream change from THEIRS (bug fixes, refactors, new features, dependency versions).",
+                      "- Keep the fork's RTSP feature additions and the fork's nbetcher/uptime-kuma naming from OURS.",
+                      "- Where both sides changed the same code for different reasons, combine both changes so the result is valid code.",
+                      "- For the package version field, use the upstream value.",
+                      "- Do not invent new code beyond what is needed to combine the two sides.",
+                      "",
+                      "Return JSON {\"resolution\": \"...\"} where resolution is the exact text that replaces the whole conflict hunk (including its marker lines).",
+                      "It must contain no conflict markers and no code fences, and must keep the file's existing indentation style.",
+                      "",
+                      "Context before the hunk (do not repeat it):",
+                      before,
+                      "",
+                      "Conflict hunk:",
+                      hunk,
+                      "",
+                      "Context after the hunk (do not repeat it):",
+                      after,
+                  ].join("\n");
+
+                  const resolution = await askGemini(prompt);
+                  if (typeof resolution !== "string" || markerPattern.test(resolution)) {
+                      throw new Error(`${path}: Gemini returned an invalid resolution for hunk ${hunkCount}`);
+                  }
+                  if (resolution !== "") {
+                      output.push(...resolution.replace(/\n$/, "").split("\n"));
+                  }
+              }
+
+              const merged = output.join("\n");
+              if (markerPattern.test(merged)) {
+                  throw new Error(`${path}: conflict markers remain after resolution`);
+              }
+              fs.writeFileSync(path, merged);
+
+              if (path.endsWith(".json")) {
+                  JSON.parse(merged);
+              } else if (/\.(js|cjs|mjs)$/.test(path)) {
+                  execFileSync("node", ["--check", path], { stdio: "inherit" });
+              }
+
+              console.log(`Resolved ${hunkCount} hunk(s) in ${path}`);
+              return hunkCount;
+          }
+
+          (async () => {
+              const entries = git("status", "--porcelain=v1", "-z").split("\0").filter(Boolean);
+              const conflicts = entries
+                  .filter((entry) => /^(DD|AU|UD|UA|DU|AA|UU) /.test(entry))
+                  .map((entry) => ({ code: entry.slice(0, 2), path: entry.slice(3) }))
+                  // package.json first: node --check reads it, so it must be valid before checking scripts
+                  .sort((a, b) => (b.path === "package.json") - (a.path === "package.json"));
+              const summary = [`### Gemini conflict resolution (${model})`, "", "| File | Resolution |", "|---|---|"];
+              let lockfileConflict = false;
+
+              for (const { code, path } of conflicts) {
+                  if (path === "package-lock.json") {
+                      lockfileConflict = true;
+                      continue;
+                  }
+                  if (["UD", "DU", "DD"].includes(code)) {
+                      // One side deleted the file; it is obsolete in the merged tree
+                      git("rm", "--quiet", "--", path);
+                      summary.push(`| \`${path}\` | deleted (${code}) |`);
+                      continue;
+                  }
+                  if (!["UU", "AA"].includes(code)) {
+                      throw new Error(`${path}: unsupported conflict type ${code}; resolve it manually`);
+                  }
+                  const hunks = await resolveFile(path);
+                  git("add", "--", path);
+                  summary.push(`| \`${path}\` | ${hunks} hunk(s) merged by Gemini |`);
+              }
+
+              if (lockfileConflict) {
+                  // Regenerate the lockfile from upstream's against the merged package.json instead of merging it as text
+                  git("checkout", "--theirs", "--", "package-lock.json");
+                  execFileSync("npm", ["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], { stdio: "inherit" });
+                  git("add", "--", "package-lock.json");
+                  summary.push("| `package-lock.json` | regenerated from upstream's lockfile |");
+              }
+
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.join("\n") + "\n");
+          })().catch((error) => {
+              console.error(`::error::${error.message}`);
+              process.exit(1);
+          });
+          NODE
+
+              if ! node "${RUNNER_TEMP}/resolve-conflicts.js"; then
+                git merge --abort || true
+                echo "::error::Gemini could not resolve the conflicts merging ${UPSTREAM_TAG} into ${RTSP_BRANCH}. Resolve them locally on ${RTSP_BRANCH}, push the resolution, then rerun this workflow."
+                exit 1
+              fi
+
+              if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+                echo "::error::Unresolved conflicts remain: $(git diff --name-only --diff-filter=U | tr '\n' ' ')"
+                exit 1
+              fi
+
+              git commit --no-edit -m "Merge upstream ${UPSTREAM_TAG} into ${RTSP_BRANCH}" -m "Merge conflicts resolved automatically with ${GEMINI_MODEL}; review before publishing."
+
+              # Prove the AI-merged tree installs and builds before pushing it anywhere
+              npm ci --ignore-scripts --no-audit --no-fund
+              npm run build
+
+              echo "ai_resolved=true" >> "${GITHUB_OUTPUT}"
+              echo "::warning::Merge conflicts were resolved by ${GEMINI_MODEL}. Review ${sync_branch}, then rerun this workflow to build and publish it."
             fi
             auth_header="$(node -e 'process.stdout.write(Buffer.from(`x-access-token:${process.env.GH_TOKEN}`).toString("base64"))')"
             git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: basic ${auth_header}"
@@ -230,6 +447,7 @@ jobs:
           DOWNSTREAM_IMAGE: ${{ env.DOWNSTREAM_IMAGE }}
           FORCE_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.force_publish }}
           SKIP_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_build }}
+          AI_RESOLVED: ${{ steps.merge.outputs.ai_resolved == 'true' }}
           CONFIRM_OVERWRITE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm_overwrite_tag || '' }}
           VERSION_SHA_TAG: ${{ steps.docker_tags.outputs.version_sha_tag }}
         run: |
@@ -240,6 +458,7 @@ jobs:
 
           const forcePublish = process.env.FORCE_PUBLISH === "true";
           const skipBuild = process.env.SKIP_BUILD === "true";
+          const aiResolved = process.env.AI_RESOLVED === "true";
           const confirmOverwriteTag = process.env.CONFIRM_OVERWRITE_TAG || "";
           const versionShaTag = process.env.VERSION_SHA_TAG;
           const maxAttempts = 4;
@@ -278,6 +497,12 @@ jobs:
                       throw new Error("skip_build and force_publish cannot both be set.");
                   }
                   console.log(`::notice::skip_build requested. Upstream merged into the sync branch; ${versionShaTag} will not be built or pushed.`);
+                  fs.appendFileSync(process.env.GITHUB_OUTPUT, "publish=false\n");
+                  return;
+              }
+
+              if (aiResolved) {
+                  console.log(`::notice::Merge conflicts were resolved by AI. ${versionShaTag} is not published until the sync branch is reviewed and this workflow is rerun.`);
                   fs.appendFileSync(process.env.GITHUB_OUTPUT, "publish=false\n");
                   return;
               }
