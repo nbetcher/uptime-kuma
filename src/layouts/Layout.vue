@@ -22,14 +22,9 @@
                 <span class="fs-4 title">{{ $t("Uptime Kuma") }}</span>
             </router-link>
 
-            <a
-                v-if="hasNewVersion"
-                target="_blank"
-                href="https://github.com/louislam/uptime-kuma/releases"
-                class="btn btn-primary me-3"
-            >
+            <a v-if="hasNewVersion" target="_blank" :href="releasePage" class="btn btn-primary me-3">
                 <font-awesome-icon icon="arrow-alt-circle-up" />
-                {{ $t("New Update") }}
+                {{ $t("New Update") }} ({{ $root.info.latestVersion }})
             </a>
 
             <ul class="nav nav-pills">
@@ -195,12 +190,14 @@ export default {
 
         hasNewVersion() {
             if (this.$root.info.latestVersion && this.$root.info.version) {
-                // Compare against upstream's version: "2.5.5-rtsp" is the same release as "2.5.5"
-                const version = this.$root.info.version.replace(/-rtsp$/, "");
-                return compareVersions(this.$root.info.latestVersion, version) >= 1;
+                return compareVersions(this.$root.info.latestVersion, this.$root.info.version) >= 1;
             } else {
                 return false;
             }
+        },
+
+        releasePage() {
+            return this.$root.info.latestVersionUrl || "https://github.com/louislam/uptime-kuma/releases";
         },
     },
 

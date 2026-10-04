@@ -11,7 +11,7 @@
             </div>
 
             <div class="my-3 update-link">
-                <a href="https://github.com/louislam/uptime-kuma/releases" target="_blank" rel="noopener">
+                <a :href="releasePage" target="_blank" rel="noopener">
                     {{ $t("Check Update On GitHub") }}
                 </a>
             </div>
@@ -57,6 +57,9 @@ export default {
         },
         settingsLoaded() {
             return this.$parent.$parent.$parent.settingsLoaded;
+        },
+        releasePage() {
+            return this.$root.info.latestVersionUrl || "https://github.com/louislam/uptime-kuma/releases";
         },
     },
 
