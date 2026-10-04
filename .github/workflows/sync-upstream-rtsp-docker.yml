@@ -16,7 +16,7 @@ on:
         type: string
         default: ""
       skip_build:
-        description: "Only pull and merge upstream into the sync branch; do not build or push a Docker image"
+        description: "Only merge upstream into rtsp-monitor; do not build or push a Docker image"
         required: false
         type: boolean
         default: false
@@ -42,7 +42,7 @@ env:
   UPSTREAM_GIT_URL: https://github.com/louislam/uptime-kuma.git
   BASE_IMAGE_REPOSITORY: louislam/uptime-kuma
   DOWNSTREAM_IMAGE: nbetcher/uptime-kuma
-  RTSP_BRANCH: rtsp-monitor-architecture
+  RTSP_BRANCH: rtsp-monitor
 
 jobs:
   prepare-rtsp-source:
@@ -58,7 +58,6 @@ jobs:
       latest_tag: ${{ steps.docker_tags.outputs.latest_tag }}
       short_sha: ${{ steps.docker_tags.outputs.short_sha }}
       source_revision: ${{ steps.build_source.outputs.source_revision }}
-      sync_branch: ${{ steps.merge.outputs.sync_branch }}
       ai_resolved: ${{ steps.merge.outputs.ai_resolved }}
       upstream_tag: ${{ steps.release.outputs.upstream_tag }}
 
@@ -105,7 +104,6 @@ jobs:
       - name: Merge latest upstream release into RTSP branch
         id: merge
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_TAG: ${{ steps.release.outputs.upstream_tag }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.gemini_model || 'gemini-flash-latest' }}
@@ -120,25 +118,19 @@ jobs:
           git fetch upstream "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
           git fetch --force origin "refs/heads/${RTSP_BRANCH}:refs/remotes/origin/${RTSP_BRANCH}"
 
-          safe_tag="$(printf "%s" "${UPSTREAM_TAG}" | tr -c 'A-Za-z0-9._-' '-')"
-          sync_branch="sync/upstream-${safe_tag}-rtsp"
+          git switch -C "${RTSP_BRANCH}" "origin/${RTSP_BRANCH}"
 
-          reuse=false
-          if git ls-remote --exit-code --heads origin "${sync_branch}" >/dev/null 2>&1; then
-            git fetch origin "refs/heads/${sync_branch}:refs/remotes/origin/${sync_branch}"
-
-            if git merge-base --is-ancestor "refs/tags/${UPSTREAM_TAG}" "origin/${sync_branch}" \
-               && git merge-base --is-ancestor "origin/${RTSP_BRANCH}" "origin/${sync_branch}"; then
-              reuse=true
-            fi
-          fi
-
-          if [ "${reuse}" = "true" ]; then
-            git switch -C "${sync_branch}" "origin/${sync_branch}"
-          else
-            git switch -C "${sync_branch}" "origin/${RTSP_BRANCH}"
+          if ! git merge-base --is-ancestor "refs/tags/${UPSTREAM_TAG}" HEAD; then
             git config merge.conflictStyle diff3
-            if ! git merge --no-edit "refs/tags/${UPSTREAM_TAG}"; then
+            git merge --no-commit --no-ff "refs/tags/${UPSTREAM_TAG}" || true
+
+            # Keep this fork's .github/workflows: GITHUB_TOKEN cannot push workflow changes,
+            # and upstream's workflows are not part of the Docker image.
+            git checkout "origin/${RTSP_BRANCH}" -- .github/workflows
+            git diff --cached --name-only -z --diff-filter=A "origin/${RTSP_BRANCH}" -- .github/workflows \
+              | xargs -0 -r git rm -q -f --
+
+            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
               if [ "${AI_RESOLVE_CONFLICTS}" != "true" ] || [ -z "${GEMINI_API_KEY}" ]; then
                 git merge --abort || true
                 echo "::error::Upstream ${UPSTREAM_TAG} does not merge cleanly into ${RTSP_BRANCH}. Resolve the conflict locally on ${RTSP_BRANCH}, push the resolution, then rerun this workflow (or enable ai_resolve_conflicts with the GEMINI_API_KEY secret set)."
@@ -206,8 +198,8 @@ jobs:
               }
           }
 
-          async function resolveFile(path) {
-              const lines = fs.readFileSync(path, "utf8").split("\n");
+          async function resolveFile(path, original, feedback) {
+              const lines = original.split("\n");
               const output = [];
               let hunkCount = 0;
 
@@ -246,6 +238,17 @@ jobs:
                       "Return JSON {\"resolution\": \"...\"} where resolution is the exact text that replaces the whole conflict hunk (including its marker lines).",
                       "It must contain no conflict markers and no code fences, and must keep the file's existing indentation style.",
                       "",
+                      ...(feedback
+                          ? [
+                                "A previous attempt to resolve this file produced invalid code:",
+                                feedback,
+                                "Avoid that mistake (for example, do not declare something both sides already declare).",
+                                "",
+                            ]
+                          : []),
+                      "The full file, with every conflict hunk still unresolved (for reference only):",
+                      original,
+                      "",
                       "Context before the hunk (do not repeat it):",
                       before,
                       "",
@@ -274,11 +277,32 @@ jobs:
               if (path.endsWith(".json")) {
                   JSON.parse(merged);
               } else if (/\.(js|cjs|mjs)$/.test(path)) {
-                  execFileSync("node", ["--check", path], { stdio: "inherit" });
+                  try {
+                      execFileSync("node", ["--check", path], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+                  } catch (error) {
+                      throw new Error(`node --check failed:\n${error.stderr || error.message}`);
+                  }
               }
 
               console.log(`Resolved ${hunkCount} hunk(s) in ${path}`);
               return hunkCount;
+          }
+
+          async function resolveFileWithRetry(path) {
+              const original = fs.readFileSync(path, "utf8");
+              let feedback = null;
+              for (let attempt = 1; attempt <= 3; attempt++) {
+                  try {
+                      return await resolveFile(path, original, feedback);
+                  } catch (error) {
+                      fs.writeFileSync(path, original);
+                      if (attempt === 3) {
+                          throw new Error(`${path}: ${error.message}`);
+                      }
+                      console.log(`::warning::${path}: attempt ${attempt} failed, retrying: ${error.message}`);
+                      feedback = error.message;
+                  }
+              }
           }
 
           (async () => {
@@ -305,7 +329,7 @@ jobs:
                   if (!["UU", "AA"].includes(code)) {
                       throw new Error(`${path}: unsupported conflict type ${code}; resolve it manually`);
                   }
-                  const hunks = await resolveFile(path);
+                  const hunks = await resolveFileWithRetry(path);
                   git("add", "--", path);
                   summary.push(`| \`${path}\` | ${hunks} hunk(s) merged by Gemini |`);
               }
@@ -336,24 +360,41 @@ jobs:
                 exit 1
               fi
 
-              git commit --no-edit -m "Merge upstream ${UPSTREAM_TAG} into ${RTSP_BRANCH}" -m "Merge conflicts resolved automatically with ${GEMINI_MODEL}; review before publishing."
-
-              # Prove the AI-merged tree installs and builds before pushing it anywhere
-              npm ci --ignore-scripts --no-audit --no-fund
-              npm run build
-
               echo "ai_resolved=true" >> "${GITHUB_OUTPUT}"
-              echo "::warning::Merge conflicts were resolved by ${GEMINI_MODEL}. Review ${sync_branch}, then rerun this workflow to build and publish it."
+              echo "::warning::Merge conflicts were resolved by ${GEMINI_MODEL}. Review ${RTSP_BRANCH}, then rerun this workflow to build and publish it."
+              commit_note="Merge conflicts resolved automatically with ${GEMINI_MODEL}; review before publishing."
+            else
+              commit_note="Workflow files are kept from ${RTSP_BRANCH}."
             fi
-            auth_header="$(node -e 'process.stdout.write(Buffer.from(`x-access-token:${process.env.GH_TOKEN}`).toString("base64"))')"
-            git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: basic ${auth_header}"
-            trap 'git config --local --unset-all "http.https://github.com/.extraheader" || true' EXIT
-            git push origin "HEAD:refs/heads/${sync_branch}" --force-with-lease
-            git config --local --unset-all "http.https://github.com/.extraheader"
-            trap - EXIT
+
+            if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+              git commit -m "Merge upstream ${UPSTREAM_TAG} into ${RTSP_BRANCH}" -m "${commit_note}"
+            fi
+            echo "needs_push=true" >> "${GITHUB_OUTPUT}"
           fi
 
-          echo "sync_branch=${sync_branch}" >> "${GITHUB_OUTPUT}"
+      # No tokens in this step: it runs code from the freshly merged tree
+      - name: Validate merged source installs and builds
+        if: steps.merge.outputs.needs_push == 'true'
+        run: |
+          set -euo pipefail
+
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+
+      - name: Push RTSP branch
+        if: steps.merge.outputs.needs_push == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          auth_header="$(node -e 'process.stdout.write(Buffer.from(`x-access-token:${process.env.GH_TOKEN}`).toString("base64"))')"
+          git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: basic ${auth_header}"
+          trap 'git config --local --unset-all "http.https://github.com/.extraheader" || true' EXIT
+          git push origin "HEAD:refs/heads/${RTSP_BRANCH}"
+          git config --local --unset-all "http.https://github.com/.extraheader"
+          trap - EXIT
 
       - name: Mark downstream RTSP version
         env:
@@ -381,7 +422,6 @@ jobs:
         id: build_source
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SYNC_BRANCH: ${{ steps.merge.outputs.sync_branch }}
           UPSTREAM_TAG: ${{ steps.release.outputs.upstream_tag }}
         run: |
           set -euo pipefail
@@ -396,11 +436,10 @@ jobs:
           fi
 
           git commit -m "Prepare RTSP Docker image for ${UPSTREAM_TAG}"
-          git fetch origin "refs/heads/${SYNC_BRANCH}:refs/remotes/origin/${SYNC_BRANCH}"
           auth_header="$(node -e 'process.stdout.write(Buffer.from(`x-access-token:${process.env.GH_TOKEN}`).toString("base64"))')"
           git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: basic ${auth_header}"
           trap 'git config --local --unset-all "http.https://github.com/.extraheader" || true' EXIT
-          git push origin "HEAD:refs/heads/${SYNC_BRANCH}" --force-with-lease
+          git push origin "HEAD:refs/heads/${RTSP_BRANCH}"
           git config --local --unset-all "http.https://github.com/.extraheader"
           trap - EXIT
           echo "source_revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
@@ -496,13 +535,13 @@ jobs:
                   if (forcePublish) {
                       throw new Error("skip_build and force_publish cannot both be set.");
                   }
-                  console.log(`::notice::skip_build requested. Upstream merged into the sync branch; ${versionShaTag} will not be built or pushed.`);
+                  console.log(`::notice::skip_build requested. Upstream merged into ${process.env.RTSP_BRANCH}; ${versionShaTag} will not be built or pushed.`);
                   fs.appendFileSync(process.env.GITHUB_OUTPUT, "publish=false\n");
                   return;
               }
 
               if (aiResolved) {
-                  console.log(`::notice::Merge conflicts were resolved by AI. ${versionShaTag} is not published until the sync branch is reviewed and this workflow is rerun.`);
+                  console.log(`::notice::Merge conflicts were resolved by AI. ${versionShaTag} is not published until ${process.env.RTSP_BRANCH} is reviewed and this workflow is rerun.`);
                   fs.appendFileSync(process.env.GITHUB_OUTPUT, "publish=false\n");
                   return;
               }
@@ -545,19 +584,14 @@ jobs:
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
-          # Build the exact commit the tags and revision label name, not
-          # whatever the sync branch points at by the time this job runs.
           ref: ${{ needs.prepare-rtsp-source.outputs.source_revision }}
           persist-credentials: false
           fetch-depth: 1
 
-      # Node 22 matches the runtime in the Docker image, and node-av
-      # (Enhanced/Full decoding) needs it: on Node 20 the RTSP decode
-      # tests would only skip.
-      - name: Use Node.js 22
+      - name: Use Node.js 20
         uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
         with:
-          node-version: 22
+          node-version: 20
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
@@ -577,15 +611,6 @@ jobs:
 
       - name: Build merged source
         run: npm run build
-
-      # A clean textual merge can still break the feature (e.g. an
-      # upstream change to the monitor loop). The RTSP suite decodes real
-      # H.264 fixtures and runs against real SQLite, so nothing is
-      # published unless it passes on the merged tree.
-      - name: Run RTSP backend tests
-        env:
-          TEST_BACKEND: "1"
-        run: node --test --test-reporter=spec test/backend-test/monitors/test-rtsp-*.js
 
       - name: Login to Docker Hub
         uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0

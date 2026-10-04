@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-04. **Reviewed:** branch `rtsp-monitor` at `9380df7`, plus
 the `sync-upstream-rtsp-docker.yml` release workflow on `master`.
-**Fixes:** branch `rtsp-monitor-architecture`.
+**Fixes:** branch `rtsp-monitor` (originally `rtsp-monitor-architecture`).
 
 **Follow-up:** [12-security-and-correctness-audit.md](./12-security-and-correctness-audit.md)
 audits that architecture branch at `d13e960`. Its fixes supersede the TLS
@@ -37,7 +37,7 @@ server publishing an H.264 test pattern over RTSP, RTSPS, and RTMP.
 
 ---
 
-## 2. Defects fixed on `rtsp-monitor-architecture`
+## 2. Defects fixed on `rtsp-monitor`
 
 ### 2.1 Native decoding shared the server's fate — **Critical, proven**
 

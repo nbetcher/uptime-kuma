@@ -1,7 +1,7 @@
 # 12 — RTSP security and correctness audit
 
 **Date:** 2026-10-04. **Repository:** `nbetcher/uptime-kuma`.
-**Audited branch:** `rtsp-monitor-architecture`.
+**Audited branch:** `rtsp-monitor` (named `rtsp-monitor-architecture` at the time of the audit).
 **Baseline commit:** `d13e96096e3306b7fc07d6c9927c62b99c4c70c0`.
 **Fixes:** working-tree changes on that branch, reviewed against this baseline.
 
