@@ -1,0 +1,237 @@
+name: RTSP Release
+
+on:
+  push:
+    branches:
+      - rtsp-monitor
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Exact rtsp-monitor commit to release (defaults to the branch head)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: rtsp-monitor-release
+  cancel-in-progress: false
+
+env:
+  GEMINI_MODEL: gemini-flash-latest
+  RTSP_BRANCH: rtsp-monitor
+  DOCKER_IMAGE: nbetcher/uptime-kuma
+  GHCR_IMAGE: ghcr.io/nbetcher/uptime-kuma
+
+jobs:
+  release:
+    if: github.repository == 'nbetcher/uptime-kuma'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment:
+      name: ${{ format('dockerhub-{0}', 'production') }}
+
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Resolve sequential release version
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          git fetch --force origin "refs/heads/${RTSP_BRANCH}:refs/remotes/origin/${RTSP_BRANCH}"
+          git fetch --force --tags origin
+
+          source_sha="$(git rev-parse "${REQUESTED_SHA}^{commit}")"
+          if ! git merge-base --is-ancestor "${source_sha}" "origin/${RTSP_BRANCH}"; then
+            echo "::error::${source_sha} is not part of ${RTSP_BRANCH}."
+            exit 1
+          fi
+
+          releases_json="$(mktemp)"
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "${releases_json}"
+
+          SOURCE_SHA="${source_sha}" RELEASES_JSON="${releases_json}" node <<'NODE'
+          const fs = require("node:fs");
+          const { execFileSync } = require("node:child_process");
+
+          const sourceSha = process.env.SOURCE_SHA;
+          const output = process.env.GITHUB_OUTPUT;
+          const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+          const baseMatch = packageVersion.match(/^(\d+\.\d+\.\d+)(?:-|$)/);
+          if (!baseMatch) {
+              throw new Error(`Cannot derive upstream version from package version: ${packageVersion}`);
+          }
+          const upstreamVersion = baseMatch[1];
+          const releasePattern = /^(\d+\.\d+\.\d+)-rtsp-monitor\.(\d+)$/;
+          const tags = execFileSync("git", ["tag", "--list"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+          const releases = JSON.parse(fs.readFileSync(process.env.RELEASES_JSON, "utf8"));
+          const matchingRelease = releases.find((release) =>
+              release.target_commitish === sourceSha && releasePattern.test(release.tag_name)
+          );
+          const pointingTag = tags.find((tag) => {
+              if (!releasePattern.test(tag)) {
+                  return false;
+              }
+              const target = execFileSync("git", ["rev-list", "-n", "1", tag], { encoding: "utf8" }).trim();
+              return target === sourceSha;
+          });
+
+          let releaseVersion = matchingRelease?.tag_name || pointingTag || "";
+          if (!releaseVersion) {
+              let maxCounter = 0;
+              for (const candidate of [...tags, ...releases.map((release) => release.tag_name)]) {
+                  const match = candidate.match(releasePattern);
+                  if (match && match[1] === upstreamVersion) {
+                      maxCounter = Math.max(maxCounter, Number(match[2]));
+                  }
+              }
+              releaseVersion = `${upstreamVersion}-rtsp-monitor.${maxCounter + 1}`;
+          }
+
+          const mergedTags = execFileSync(
+              "git",
+              ["for-each-ref", `--merged=${sourceSha}`, "--sort=-creatordate", "--format=%(refname:strip=2)", "refs/tags"],
+              { encoding: "utf8" }
+          ).trim().split("\n").filter(Boolean);
+          const previousTag = mergedTags.find((tag) => tag !== releaseVersion && releasePattern.test(tag)) || "";
+          const alreadyPublished = matchingRelease ? !matchingRelease.draft : false;
+
+          fs.appendFileSync(output, `source_sha=${sourceSha}\n`);
+          fs.appendFileSync(output, `upstream_version=${upstreamVersion}\n`);
+          fs.appendFileSync(output, `release_version=${releaseVersion}\n`);
+          fs.appendFileSync(output, `previous_tag=${previousTag}\n`);
+          fs.appendFileSync(output, `already_published=${alreadyPublished}\n`);
+          NODE
+
+      - name: Report existing release
+        if: steps.version.outputs.already_published == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+        run: echo "${RELEASE_VERSION} already publishes this commit; nothing to do."
+
+      - name: Set up Node.js 22
+        if: steps.version.outputs.already_published != 'true'
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 22
+
+      - name: Install, version, test, and build
+        if: steps.version.outputs.already_published != 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          npm clean-install --no-audit --no-fund
+          npm --no-git-tag-version --ignore-scripts version "${RELEASE_VERSION}"
+          node --test --test-reporter=spec test/backend-test/monitors/test-rtsp-*.js
+          npm run build
+          tar -czf "${RUNNER_TEMP}/dist.tar.gz" dist
+
+      - name: Generate detailed Gemini changelog
+        if: steps.version.outputs.already_published != 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+          SOURCE_SHA: ${{ steps.version.outputs.source_sha }}
+          UPSTREAM_VERSION: ${{ steps.version.outputs.upstream_version }}
+        run: node extra/release/generate-rtsp-changelog.mjs > "${RUNNER_TEMP}/release-notes.md"
+
+      - name: Create or update draft GitHub release
+        if: steps.version.outputs.already_published != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+          SOURCE_SHA: ${{ steps.version.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_VERSION}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_VERSION}" \
+              --draft \
+              --prerelease \
+              --latest=false \
+              --title "${RELEASE_VERSION}" \
+              --notes-file "${RUNNER_TEMP}/release-notes.md"
+          else
+            gh release create "${RELEASE_VERSION}" \
+              --target "${SOURCE_SHA}" \
+              --draft \
+              --prerelease \
+              --latest=false \
+              --title "${RELEASE_VERSION}" \
+              --notes-file "${RUNNER_TEMP}/release-notes.md"
+          fi
+
+      - name: Set up QEMU
+        if: steps.version.outputs.already_published != 'true'
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        if: steps.version.outputs.already_published != 'true'
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+
+      - name: Login to Docker Hub
+        if: steps.version.outputs.already_published != 'true'
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to GitHub Container Registry
+        if: steps.version.outputs.already_published != 'true'
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push RTSP Docker images
+        if: steps.version.outputs.already_published != 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+          SOURCE_SHA: ${{ steps.version.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+
+          docker buildx build \
+            -f docker/dockerfile \
+            --platform linux/amd64,linux/arm64,linux/arm/v7 \
+            -t "${DOCKER_IMAGE}:${RELEASE_VERSION}" \
+            -t "${DOCKER_IMAGE}:latest-rtsp" \
+            -t "${GHCR_IMAGE}:${RELEASE_VERSION}" \
+            -t "${GHCR_IMAGE}:latest-rtsp" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${SOURCE_SHA}" \
+            --label "org.opencontainers.image.version=${RELEASE_VERSION}" \
+            --provenance=true \
+            --sbom=true \
+            --target release \
+            . \
+            --push
+
+      - name: Upload asset and publish release
+        if: steps.version.outputs.already_published != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          gh release upload "${RELEASE_VERSION}" --clobber "${RUNNER_TEMP}/dist.tar.gz"
+          gh release edit "${RELEASE_VERSION}" --draft=false --prerelease --latest=false
+          echo "### Published ${RELEASE_VERSION}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Docker tags: \`${RELEASE_VERSION}\`, \`latest-rtsp\`" >> "${GITHUB_STEP_SUMMARY}"
