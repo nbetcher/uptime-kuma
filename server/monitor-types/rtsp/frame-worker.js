@@ -48,6 +48,11 @@ async function probe() {
         const av = require("node-av/api");
         if (typeof av.Demuxer?.open !== "function" || typeof av.Decoder?.create !== "function") {
             nodeAv = "node-av/api does not expose Demuxer.open / Decoder.create";
+        } else if (typeof Promise.withResolvers !== "function") {
+            // node-av's packet iterator calls Promise.withResolvers
+            // (Node.js 22+). On older runtimes it throws inside the
+            // iterator and decoding silently yields no frames.
+            nodeAv = `node-av needs Node.js 22 or newer; this server runs ${process.version}`;
         }
     } catch (e) {
         nodeAv = e.message;

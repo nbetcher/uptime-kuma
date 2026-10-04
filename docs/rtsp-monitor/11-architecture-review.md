@@ -196,6 +196,11 @@ the browser.
   round-trips, fewer UDP ports).
 - Live frames are downscaled to ≤640 px in the worker, matching the
   reference canonicalisation and keeping IPC small.
+- node-av 5.x calls `Promise.withResolvers` (Node.js 22+), while Uptime
+  Kuma supports Node.js ≥ 20.4. On Node 20 the packet iterator throws and
+  decoding silently yields no frames (`only 0/5 valid frames`). The Docker
+  images run Node 22 and are unaffected; on Node 20 the native-support
+  probe now reports Enhanced/Full as unavailable with that reason.
 - `ReferenceImagePanel` used Bootstrap `.card`, which the app's global
   border radius renders as an ellipse.
 
