@@ -206,8 +206,8 @@ jobs:
               }
           }
 
-          async function resolveFile(path) {
-              const lines = fs.readFileSync(path, "utf8").split("\n");
+          async function resolveFile(path, original, feedback) {
+              const lines = original.split("\n");
               const output = [];
               let hunkCount = 0;
 
@@ -246,6 +246,17 @@ jobs:
                       "Return JSON {\"resolution\": \"...\"} where resolution is the exact text that replaces the whole conflict hunk (including its marker lines).",
                       "It must contain no conflict markers and no code fences, and must keep the file's existing indentation style.",
                       "",
+                      ...(feedback
+                          ? [
+                                "A previous attempt to resolve this file produced invalid code:",
+                                feedback,
+                                "Avoid that mistake (for example, do not declare something both sides already declare).",
+                                "",
+                            ]
+                          : []),
+                      "The full file, with every conflict hunk still unresolved (for reference only):",
+                      original,
+                      "",
                       "Context before the hunk (do not repeat it):",
                       before,
                       "",
@@ -274,11 +285,32 @@ jobs:
               if (path.endsWith(".json")) {
                   JSON.parse(merged);
               } else if (/\.(js|cjs|mjs)$/.test(path)) {
-                  execFileSync("node", ["--check", path], { stdio: "inherit" });
+                  try {
+                      execFileSync("node", ["--check", path], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+                  } catch (error) {
+                      throw new Error(`node --check failed:\n${error.stderr || error.message}`);
+                  }
               }
 
               console.log(`Resolved ${hunkCount} hunk(s) in ${path}`);
               return hunkCount;
+          }
+
+          async function resolveFileWithRetry(path) {
+              const original = fs.readFileSync(path, "utf8");
+              let feedback = null;
+              for (let attempt = 1; attempt <= 3; attempt++) {
+                  try {
+                      return await resolveFile(path, original, feedback);
+                  } catch (error) {
+                      fs.writeFileSync(path, original);
+                      if (attempt === 3) {
+                          throw new Error(`${path}: ${error.message}`);
+                      }
+                      console.log(`::warning::${path}: attempt ${attempt} failed, retrying: ${error.message}`);
+                      feedback = error.message;
+                  }
+              }
           }
 
           (async () => {
@@ -305,7 +337,7 @@ jobs:
                   if (!["UU", "AA"].includes(code)) {
                       throw new Error(`${path}: unsupported conflict type ${code}; resolve it manually`);
                   }
-                  const hunks = await resolveFile(path);
+                  const hunks = await resolveFileWithRetry(path);
                   git("add", "--", path);
                   summary.push(`| \`${path}\` | ${hunks} hunk(s) merged by Gemini |`);
               }
