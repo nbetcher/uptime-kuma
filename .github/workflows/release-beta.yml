@@ -23,6 +23,8 @@ permissions:
 
 jobs:
   beta-release:
+    # Beta images are not built for this fork; only release builds are published
+    if: github.repository == 'louislam/uptime-kuma'
     runs-on: ubuntu-latest
     timeout-minutes: 120
 

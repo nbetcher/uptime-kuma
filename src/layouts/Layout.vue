@@ -195,7 +195,9 @@ export default {
 
         hasNewVersion() {
             if (this.$root.info.latestVersion && this.$root.info.version) {
-                return compareVersions(this.$root.info.latestVersion, this.$root.info.version) >= 1;
+                // Compare against upstream's version: "2.5.5-rtsp" is the same release as "2.5.5"
+                const version = this.$root.info.version.replace(/-rtsp$/, "");
+                return compareVersions(this.$root.info.latestVersion, version) >= 1;
             } else {
                 return false;
             }

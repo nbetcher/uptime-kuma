@@ -34,9 +34,10 @@ checkVersionFormat(version);
 // Check if the semver identifier is empty
 const semverIdentifier = semver.prerelease(version);
 console.log("Semver identifier:", semverIdentifier);
-if (semverIdentifier) {
-    console.warn("VERSION should not have a semver identifier for final release");
-    //process.exit(1);
+// The only allowed identifier is this fork's "-rtsp" suffix (e.g. 2.5.5-rtsp)
+if (semverIdentifier && !(semverIdentifier.length === 1 && semverIdentifier[0] === "rtsp")) {
+    console.error("VERSION should not have a semver identifier other than -rtsp for final release");
+    process.exit(1);
 }
 
 // Check if docker is running
