@@ -49,13 +49,13 @@ describe("validateStreamMonitor", () => {
                         streamMode: "full",
                         streamSeparateDayNight: true,
                     },
-                    {} // bean exists, but no reference blobs
+                    { day: false, night: false } // saved monitor, no references
                 ),
             /Day reference/
         );
     });
 
-    test("FR-019b: Full mode permitted on add (bean=null) so user can upload refs after save", () => {
+    test("FR-019b: Full mode permitted on add (references=null) so user can upload refs after save", () => {
         // No throw expected — references can only be uploaded after
         // the monitor row exists. Runtime emits MISSING_REFERENCE.
         validateStreamMonitor(
@@ -79,7 +79,7 @@ describe("validateStreamMonitor", () => {
                         streamMode: "full",
                         streamSeparateDayNight: true,
                     },
-                    { stream_reference_day_blob: Buffer.from([1]) }
+                    { day: true, night: false }
                 ),
             /Night reference/
         );
@@ -93,10 +93,7 @@ describe("validateStreamMonitor", () => {
                 streamMode: "full",
                 streamSeparateDayNight: true,
             },
-            {
-                stream_reference_day_blob: Buffer.from([1]),
-                stream_reference_night_blob: Buffer.from([2]),
-            }
+            { day: true, night: true }
         );
     });
 
@@ -108,7 +105,7 @@ describe("validateStreamMonitor", () => {
                 streamMode: "full",
                 streamSeparateDayNight: false,
             },
-            { stream_reference_day_blob: Buffer.from([1]) }
+            { day: true, night: false }
         );
     });
 
@@ -169,7 +166,7 @@ describe("validateStreamMonitor", () => {
                         streamSeparateDayNight: false,
                         streamMatchThreshold: -1,
                     },
-                    { stream_reference_day_blob: Buffer.from([1]) }
+                    { day: true, night: false }
                 ),
             /streamMatchThreshold/
         );
@@ -183,7 +180,7 @@ describe("validateStreamMonitor", () => {
                         streamSeparateDayNight: false,
                         streamMatchThreshold: 200,
                     },
-                    { stream_reference_day_blob: Buffer.from([1]) }
+                    { day: true, night: false }
                 ),
             /streamMatchThreshold/
         );

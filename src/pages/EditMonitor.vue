@@ -1305,11 +1305,6 @@
                                     v-if="monitor.streamMode === 'full' && monitor.id"
                                     :monitor-id="monitor.id"
                                     :separate-day-night="monitor.streamSeparateDayNight !== false"
-                                    :day-has-blob="!!monitor.streamReferenceDayHasBlob"
-                                    :night-has-blob="!!monitor.streamReferenceNightHasBlob"
-                                    :day-url="monitor.streamReferenceDayUrl"
-                                    :night-url="monitor.streamReferenceNightUrl"
-                                    @uploaded="onRtspReferenceUploaded"
                                 />
                                 <div
                                     v-else-if="monitor.streamMode === 'full'"
@@ -3313,12 +3308,6 @@ const defaultValueList = {
         streamSeparateDayNight: true,
         streamStatusThumbnail: false,
         streamKeepDownImages: false,
-        streamReferenceDayHasBlob: false,
-        streamReferenceDayUrl: null,
-        streamReferenceDayHash: null,
-        streamReferenceNightHasBlob: false,
-        streamReferenceNightUrl: null,
-        streamReferenceNightHash: null,
     },
 };
 
@@ -4106,35 +4095,6 @@ message HealthCheckResponse {
         this.kafkaSaslMechanismOptions = kafkaSaslMechanismOptions;
     },
     methods: {
-        /**
-         * Refresh the local reference flags after the
-         * ReferenceImagePanel child reports a successful upload.
-         * @param {{slot: string, hasBlob: boolean, url?: string, fingerprint?: string|null}} info Upload result
-         * @returns {void}
-         */
-        onRtspReferenceUploaded(info) {
-            if (!info || !info.slot) {
-                return;
-            }
-            if (info.slot === "day" || info.slot === "single") {
-                this.monitor.streamReferenceDayHasBlob = !!info.hasBlob;
-                if ("url" in info) {
-                    this.monitor.streamReferenceDayUrl = info.url || null;
-                }
-                if ("fingerprint" in info) {
-                    this.monitor.streamReferenceDayHash = info.fingerprint || null;
-                }
-            } else if (info.slot === "night") {
-                this.monitor.streamReferenceNightHasBlob = !!info.hasBlob;
-                if ("url" in info) {
-                    this.monitor.streamReferenceNightUrl = info.url || null;
-                }
-                if ("fingerprint" in info) {
-                    this.monitor.streamReferenceNightHash = info.fingerprint || null;
-                }
-            }
-        },
-
         /**
          * Initialize the edit monitor form
          * @returns {void}

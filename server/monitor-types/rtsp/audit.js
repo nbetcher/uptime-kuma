@@ -1,5 +1,8 @@
 const { R } = require("redbean-node");
 const dayjs = require("dayjs");
+// Registered here as well as in server.js so the module works on its
+// own (tests, scripts); extend() is idempotent.
+dayjs.extend(require("dayjs/plugin/utc"));
 const { log } = require("../../../src/util");
 
 /**
@@ -19,7 +22,7 @@ const { log } = require("../../../src/util");
  * @param {number} args.byteSize Canonical bytes length (0 for delete)
  * @param {Buffer|null} args.sha256 SHA-256 of canonical bytes (null for delete)
  * @param {number|null} args.userId Authenticated user id (null if disableAuth)
- * @param {object} [args.trx] Optional RedBean transaction
+ * @param {object} args.trx Optional RedBean transaction
  * @returns {Promise<void>}
  */
 async function recordAudit(args) {
@@ -33,7 +36,7 @@ async function recordAudit(args) {
         args.byteSize | 0,
         args.sha256 || null,
         args.userId === undefined ? null : args.userId,
-        dayjs().toISOString(),
+        R.isoDateTimeMillis(dayjs.utc()),
     ];
     if (args.trx) {
         await args.trx.exec(sql, bindings);

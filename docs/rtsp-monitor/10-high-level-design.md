@@ -3,6 +3,12 @@
 **Status:** HLDS round-1 draft. Author: Nick Betcher. Date: 2026-05-11.
 Supersedes the "HLDS pending" notice in `README.md`.
 
+> **Partly superseded (2026-10-04)** by
+> [11-architecture-review.md](./11-architecture-review.md): reference
+> storage (§3.1, §4.2), frame capture and libav options (§5.6–§5.8,
+> §6.1–§6.2 — `rtsp_user`, `rtsp_pass` and `stimeout` are not libav
+> options), and the Enhanced/Full TLS posture (§12.3).
+
 This document is the bridge between the requirements in
 **[04-requirements.md](./04-requirements.md)** and the source code that
 will implement them. It is intentionally one tier above an LLD: it pins

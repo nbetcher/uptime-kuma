@@ -761,18 +761,6 @@ let needSetup = false;
                     "humanReadableInterval",
                     "globalpingdnsresolvetypeoptions",
                     "responsecheck",
-                    // RTSP reference columns are server-authoritative —
-                    // the dedicated upload socket handlers are the only
-                    // legitimate writers. Stripping the form copies on
-                    // add prevents the frontend from echoing a hex
-                    // string into a binary column, or clobbering a
-                    // stale value on a clone/duplicate flow.
-                    "streamReferenceDayHasBlob",
-                    "streamReferenceNightHasBlob",
-                    "streamReferenceDayHash",
-                    "streamReferenceNightHash",
-                    "streamReferenceDayUrl",
-                    "streamReferenceNightUrl",
                 ];
                 for (const prop of frontendOnlyProperties) {
                     if (prop in monitor) {
@@ -974,9 +962,10 @@ let needSetup = false;
                     const {
                         applyStreamFieldsToBean,
                         validateStreamMonitor,
+                        loadReferencePresence,
                     } = require("./monitor-types/rtsp/validation");
                     applyStreamFieldsToBean(bean, monitor);
-                    validateStreamMonitor(monitor, bean);
+                    validateStreamMonitor(monitor, await loadReferencePresence(bean.id));
                 }
 
                 bean.validate();

@@ -36,6 +36,12 @@ const SOBEL_X_KERNEL = {
 
 // HLDS §11.1: env vars are read once at module load. Changes require a
 // server restart, consistent with the rest of `server/config.js`.
+/**
+ * Read a positive integer from the environment.
+ * @param {string} name Variable name
+ * @param {number} fallback Value when unset or invalid
+ * @returns {number} Parsed value
+ */
 function envInt(name, fallback) {
     const n = parseInt(process.env[name], 10);
     return Number.isFinite(n) && n > 0 ? n : fallback;

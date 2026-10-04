@@ -35,6 +35,7 @@ upstream Uptime Kuma maintainers (notably `@CommanderStorm` and `@louislam`).
 | 8 | [08-open-questions.md](./08-open-questions.md) | Pushbacks on parts of the original requirements, alternatives I recommend you weigh, items still to decide |
 | 9 | [09-traceability-matrix.md](./09-traceability-matrix.md) | Two-way map between original prompt bullets, REQ-IDs, and reviewer concerns — for adversarial review |
 | 10 | [10-high-level-design.md](./10-high-level-design.md) | High-Level Design Specification — module layout, data model, interfaces, sequence flows, error model, test strategy. Resolves Q13–Q21 and corrects sanity-check items found while writing the HLDS |
+| 11 | [11-architecture-review.md](./11-architecture-review.md) | Post-implementation architecture review: defects found against real servers, what changed (decode in a worker process, credential/TLS/timeout fixes, reference table, bounded skips), and open recommendations. Supersedes parts of 10 |
 
 ## How to read these
 

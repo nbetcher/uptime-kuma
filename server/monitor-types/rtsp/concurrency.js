@@ -1,5 +1,6 @@
 const os = require("node:os");
 const { log } = require("../../../src/util");
+const { messages } = require("./messages");
 
 const DEFAULT_LIMIT = Math.max(2, Math.min(4, Math.floor(os.cpus().length / 2)));
 const ENV_LIMIT = parseInt(process.env.RTSP_CONCURRENCY || "", 10);
@@ -8,8 +9,9 @@ const LIMIT = Number.isFinite(ENV_LIMIT) && ENV_LIMIT > 0 ? ENV_LIMIT : DEFAULT_
 /**
  * SkipCheckError signals "skip this check, do not write a heartbeat"
  * — as opposed to a normal Error which the monitor framework converts
- * to a DOWN heartbeat. Currently thrown by `acquireConcurrencyToken`
- * when the global decode bucket is saturated.
+ * to a DOWN heartbeat. Thrown when a check cannot get its per-monitor
+ * lock or a global decode slot in time, at most
+ * MAX_CONSECUTIVE_SKIPS times in a row per monitor.
  */
 class SkipCheckError extends Error {
     /**
@@ -92,57 +94,128 @@ class TokenBucket {
 }
 
 const globalBucket = new TokenBucket(LIMIT);
-const monitorMutexes = new Map(); // monitor.id → Promise chain tip
+const monitorLocks = new Map(); // monitor.id → TokenBucket(1)
+const consecutiveSkips = new Map(); // monitor.id → number of skips in a row
+
+// Used when a caller passes no usable wait time.
+const DEFAULT_WAIT_MS = 60000;
+
+/**
+ * @param {unknown} waitMs Requested wait
+ * @returns {number} A positive finite wait in milliseconds
+ */
+function sanitizeWait(waitMs) {
+    return Number.isFinite(waitMs) && waitMs > 0 ? waitMs : DEFAULT_WAIT_MS;
+}
+
+// A skipped check writes no heartbeat, so the monitor keeps showing
+// whatever it showed last — possibly UP. That is only acceptable as a
+// transient. After this many skips in a row the next one is reported
+// as a real failure so a starved monitor cannot stay green forever.
+const MAX_CONSECUTIVE_SKIPS = 2;
+
+/**
+ * Turn a lock-acquisition timeout into the error the check should
+ * throw: a SkipCheckError while the monitor is within its skip
+ * allowance, a plain Error (→ DOWN/PENDING) once it is exhausted.
+ * @param {number|string} monitorId Monitor id
+ * @param {string} reason Why the check could not run
+ * @param {boolean} countSkips False for Test-button runs, which must not
+ *     eat into the scheduled monitor's allowance
+ * @returns {Error} Error to throw
+ */
+function skipOrFail(monitorId, reason, countSkips) {
+    if (!countSkips) {
+        return new SkipCheckError(reason);
+    }
+    const n = (consecutiveSkips.get(monitorId) || 0) + 1;
+    consecutiveSkips.set(monitorId, n);
+    if (n > MAX_CONSECUTIVE_SKIPS) {
+        return new Error(messages.CHECK_STARVED(n, reason));
+    }
+    log.warn("rtsp", `RTSP check skipped (${n}/${MAX_CONSECUTIVE_SKIPS}): ${reason} (monitor=${monitorId})`);
+    return new SkipCheckError(reason);
+}
+
+/**
+ * Record that a check got all the locks it needs and will run, which
+ * resets the monitor's consecutive-skip count.
+ * @param {number|string} monitorId Monitor id
+ * @returns {void}
+ */
+function clearSkips(monitorId) {
+    consecutiveSkips.delete(monitorId);
+}
 
 /**
  * Acquire a slot in the global decode bucket.
- * @param {object} monitor Monitor row (uses `timeout` + `id`)
- * @param {number} budgetMs Wall-clock budget for the check
+ * @param {object} monitor Monitor row (uses `id`)
+ * @param {number} waitMs How long to wait for a slot
+ * @param {object} opts Options
+ * @param {boolean} opts.countSkips Count a timeout toward the skip allowance (default true)
  * @returns {Promise<{release: Function}>} Disposable token
  */
-async function acquireConcurrencyToken(monitor, budgetMs) {
-    // Wait at least as long as the wall-clock budget: a check that
-    // already has the budget to *run* shouldn't be denied a token in
-    // less time. Bounded above by 2× the budget so a saturated install
-    // surfaces SkipCheckError promptly enough to keep the scheduler
-    // signal visible per NFR-004 acceptance (c).
-    const monitorTimeoutMs = (parseInt(monitor.timeout, 10) || 30) * 1000;
-    const timeout = Math.min(Math.max(monitorTimeoutMs, budgetMs), budgetMs * 2);
+async function acquireConcurrencyToken(monitor, waitMs, opts = {}) {
     try {
-        await globalBucket.acquire(timeout);
+        await globalBucket.acquire(sanitizeWait(waitMs));
     } catch (err) {
         if (err instanceof SkipCheckError) {
-            log.warn("rtsp", `RTSP check skipped: concurrency limit (monitor=${monitor.id})`);
+            throw skipOrFail(monitor.id, `all ${globalBucket.limit} decode slots busy`, opts.countSkips !== false);
         }
         throw err;
     }
+    let released = false;
     return {
-        release: () => globalBucket.release(),
+        release: () => {
+            if (!released) {
+                released = true;
+                globalBucket.release();
+            }
+        },
     };
 }
 
 /**
  * Acquire a per-monitor mutex so two checks for the same monitor
- * never run concurrently. NFR-014.
+ * never run concurrently (a scheduled check and a Test-button run, or
+ * a check from a monitor instance that was restarted mid-check).
+ * NFR-014. The wait is bounded: a holder that never lets go must not
+ * queue every later check behind it indefinitely.
  * @param {number|string} monitorId Monitor id
+ * @param {number} waitMs How long to wait for the lock
+ * @param {object} opts Options
+ * @param {boolean} opts.countSkips Count a timeout toward the skip allowance (default true)
  * @returns {Promise<{release: Function}>} Disposable token
  */
-async function acquireMonitorMutex(monitorId) {
-    const prev = monitorMutexes.get(monitorId) || Promise.resolve();
-    let release;
-    const next = new Promise((r) => {
-        release = r;
-    });
-    const chain = prev.then(() => next);
-    monitorMutexes.set(monitorId, chain);
-    await prev;
+async function acquireMonitorMutex(monitorId, waitMs, opts = {}) {
+    let lock = monitorLocks.get(monitorId);
+    if (!lock) {
+        lock = new TokenBucket(1);
+        monitorLocks.set(monitorId, lock);
+    }
+    const dropIfIdle = () => {
+        if (lock.active === 0 && lock.queue.length === 0 && monitorLocks.get(monitorId) === lock) {
+            monitorLocks.delete(monitorId);
+        }
+    };
+    try {
+        await lock.acquire(sanitizeWait(waitMs));
+    } catch (err) {
+        dropIfIdle();
+        if (err instanceof SkipCheckError) {
+            throw skipOrFail(monitorId, "previous check for this monitor is still running", opts.countSkips !== false);
+        }
+        throw err;
+    }
+    let released = false;
     return {
         release: () => {
-            release();
-            // Only delete if no later waiter has chained onto us
-            if (monitorMutexes.get(monitorId) === chain) {
-                monitorMutexes.delete(monitorId);
+            if (released) {
+                return;
             }
+            released = true;
+            lock.release();
+            dropIfIdle();
         },
     };
 }
@@ -165,7 +238,9 @@ module.exports = {
     DEFAULT_LIMIT,
     TokenBucket,
     SkipCheckError,
+    MAX_CONSECUTIVE_SKIPS,
     acquireConcurrencyToken,
     acquireMonitorMutex,
+    clearSkips,
     _peekBucket,
 };

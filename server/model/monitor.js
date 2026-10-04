@@ -222,11 +222,9 @@ class Monitor extends BeanModel {
             saveErrorResponse: this.getSaveErrorResponse(),
             responseMaxLength: this.response_max_length ?? RESPONSE_BODY_LENGTH_DEFAULT,
 
-            // Stream-monitor (RTSP / RTMP) configuration. BLOBs are
-            // excluded — fetched lazily via socket per HLDS UI-012.
-            // Reference URLs / hashes are sensitive (can leak internal
-            // hostnames) and move into the includeSensitiveData block
-            // below.
+            // Stream-monitor (RTSP / RTMP) configuration. Reference
+            // images live in monitor_stream_reference and are fetched
+            // by the edit form over the rtsp:* socket events.
             streamProtocol: this.stream_protocol,
             streamTransport: this.stream_transport,
             streamMode: this.stream_mode,
@@ -242,24 +240,11 @@ class Monitor extends BeanModel {
             streamKeepDownImages: this.stream_keep_down_images === null || this.stream_keep_down_images === undefined
                 ? null
                 : Boolean(this.stream_keep_down_images),
-            streamReferenceDayHasBlob: Boolean(this.stream_reference_day_blob),
-            streamReferenceNightHasBlob: Boolean(this.stream_reference_night_blob),
         };
 
         if (includeSensitiveData) {
             data = {
                 ...data,
-                // Stream-monitor reference metadata: URLs may disclose
-                // internal hostnames, fingerprints are not secrets in
-                // themselves but only meaningful to the operator.
-                streamReferenceDayUrl: this.stream_reference_day_url,
-                streamReferenceNightUrl: this.stream_reference_night_url,
-                streamReferenceDayHash: this.stream_reference_day_hash
-                    ? Buffer.from(this.stream_reference_day_hash).toString("hex")
-                    : null,
-                streamReferenceNightHash: this.stream_reference_night_hash
-                    ? Buffer.from(this.stream_reference_night_hash).toString("hex")
-                    : null,
                 headers: this.headers,
                 body: this.body,
                 grpcBody: this.grpcBody,

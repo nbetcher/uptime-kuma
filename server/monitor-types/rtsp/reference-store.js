@@ -1,4 +1,8 @@
 const crypto = require("node:crypto");
+const dayjs = require("dayjs");
+// Registered here as well as in server.js so the module works on its
+// own (tests, scripts); extend() is idempotent.
+dayjs.extend(require("dayjs/plugin/utc"));
 const { R } = require("redbean-node");
 const { log } = require("../../../src/util");
 const { canonicalize, fingerprint, packFingerprint, thumbnailize } = require("./image-pipeline");
@@ -8,26 +12,25 @@ const { recordAudit } = require("./audit");
 const VALID_SLOTS = ["day", "night", "single"];
 
 /**
- * Map the public `slot` discriminator to internal column names. The
- * 'single' slot reuses the Day column because the storage layout is
- * keyed by (day|night) only.
+ * Map the public `slot` discriminator to the stored slot. 'single'
+ * (one reference, no day/night split) is stored in the 'day' row.
  * @param {string} slot 'day' | 'night' | 'single'
- * @returns {{blobCol: string, urlCol: string, hashCol: string}}
+ * @returns {'day'|'night'} Stored slot
  */
-function columnsForSlot(slot) {
-    if (slot === "night") {
-        return {
-            blobCol: "stream_reference_night_blob",
-            urlCol: "stream_reference_night_url",
-            hashCol: "stream_reference_night_hash",
-        };
+function storedSlot(slot) {
+    if (!VALID_SLOTS.includes(slot)) {
+        throw new Error(`invalid slot: ${slot}`);
     }
-    // day OR single both target the Day column set
-    return {
-        blobCol: "stream_reference_day_blob",
-        urlCol: "stream_reference_day_url",
-        hashCol: "stream_reference_day_hash",
-    };
+    return slot === "night" ? "night" : "day";
+}
+
+/**
+ * Current time in the format the rest of Uptime Kuma stores, valid for
+ * both SQLite and MariaDB DATETIME columns.
+ * @returns {string} Timestamp
+ */
+function nowForDb() {
+    return R.isoDateTimeMillis(dayjs.utc());
 }
 
 /**
@@ -60,26 +63,23 @@ async function processRaw(rawBytes) {
 }
 
 /**
- * Persist a processed reference onto the monitor row. When `trx` is
- * provided the UPDATE runs on the transaction; otherwise on the
- * default connection.
+ * Replace the reference row for (monitor, slot) inside a transaction.
+ * @param {object} trx RedBean transaction
  * @param {number} monitorId Monitor ID
  * @param {string} slot 'day' | 'night' | 'single'
  * @param {Buffer} blob Canonical JPEG
  * @param {Buffer} hash Packed fingerprint
  * @param {string|null} sourceUrl Source URL if any
- * @param {object} [trx] Optional RedBean transaction
  * @returns {Promise<void>}
  */
-async function persist(monitorId, slot, blob, hash, sourceUrl, trx) {
-    const cols = columnsForSlot(slot);
-    const sql = `UPDATE monitor SET ${cols.blobCol} = ?, ${cols.urlCol} = ?, ${cols.hashCol} = ? WHERE id = ?`;
-    const bindings = [ blob, sourceUrl, hash, monitorId ];
-    if (trx) {
-        await trx.exec(sql, bindings);
-        return;
-    }
-    await R.exec(sql, bindings);
+async function persist(trx, monitorId, slot, blob, hash, sourceUrl) {
+    const stored = storedSlot(slot);
+    await trx.exec("DELETE FROM monitor_stream_reference WHERE monitor_id = ? AND slot = ?", [monitorId, stored]);
+    await trx.exec(
+        "INSERT INTO monitor_stream_reference (monitor_id, slot, image_blob, fingerprint, source_url, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?)",
+        [monitorId, stored, blob, hash, sourceUrl, nowForDb()]
+    );
 }
 
 /**
@@ -103,7 +103,7 @@ async function persistWithAudit(args) {
     let trx;
     try {
         trx = await R.begin();
-        await persist(monitorId, slot, blob, hash, sourceUrl, trx);
+        await persist(trx, monitorId, slot, blob, hash, sourceUrl);
         await recordAudit({
             monitorId,
             slot,
@@ -138,9 +138,7 @@ async function persistWithAudit(args) {
  */
 async function uploadBlob(args) {
     const { monitorId, slot, bytes, userId } = args;
-    if (!VALID_SLOTS.includes(slot)) {
-        throw new Error(`invalid slot: ${slot}`);
-    }
+    storedSlot(slot);
     if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
         throw new Error("empty upload");
     }
@@ -178,9 +176,7 @@ async function uploadBlob(args) {
  */
 async function uploadUrl(args) {
     const { monitorId, slot, url, monitorHostname, userId } = args;
-    if (!VALID_SLOTS.includes(slot)) {
-        throw new Error(`invalid slot: ${slot}`);
-    }
+    storedSlot(slot);
     if (!url) {
         throw new Error("URL is required");
     }
@@ -217,11 +213,10 @@ async function uploadUrl(args) {
  */
 async function refreshUrl(args) {
     const { monitorId, slot, monitorHostname, userId } = args;
-    if (!VALID_SLOTS.includes(slot)) {
-        throw new Error(`invalid slot: ${slot}`);
-    }
-    const cols = columnsForSlot(slot);
-    const row = await R.getRow(`SELECT ${cols.urlCol} as url FROM monitor WHERE id = ?`, [monitorId]);
+    const row = await R.getRow(
+        "SELECT source_url AS url FROM monitor_stream_reference WHERE monitor_id = ? AND slot = ?",
+        [monitorId, storedSlot(slot)]
+    );
     if (!row || !row.url) {
         throw new Error("no URL stored for this slot");
     }
@@ -256,14 +251,10 @@ async function refreshUrl(args) {
  */
 async function deleteSlot(args) {
     const { monitorId, slot, userId } = args;
-    if (!VALID_SLOTS.includes(slot)) {
-        throw new Error(`invalid slot: ${slot}`);
-    }
-    const cols = columnsForSlot(slot);
-    await R.exec(
-        `UPDATE monitor SET ${cols.blobCol} = NULL, ${cols.urlCol} = NULL, ${cols.hashCol} = NULL WHERE id = ?`,
-        [monitorId]
-    );
+    await R.exec("DELETE FROM monitor_stream_reference WHERE monitor_id = ? AND slot = ?", [
+        monitorId,
+        storedSlot(slot),
+    ]);
     await recordAudit({
         monitorId,
         slot,
@@ -275,21 +266,62 @@ async function deleteSlot(args) {
 }
 
 /**
- * Fetch the cached BLOB for an HTTP GET response.
+ * Fetch the cached BLOB for display.
  * @param {object} args Arguments
  * @returns {Promise<Buffer|null>}
  */
 async function getBlob(args) {
     const { monitorId, slot } = args;
-    if (!VALID_SLOTS.includes(slot)) {
-        throw new Error(`invalid slot: ${slot}`);
-    }
-    const cols = columnsForSlot(slot);
-    const row = await R.getRow(`SELECT ${cols.blobCol} as blob FROM monitor WHERE id = ?`, [monitorId]);
-    if (!row || !row.blob) {
+    const row = await R.getRow("SELECT image_blob FROM monitor_stream_reference WHERE monitor_id = ? AND slot = ?", [
+        monitorId,
+        storedSlot(slot),
+    ]);
+    if (!row || !row.image_blob) {
         return null;
     }
-    return Buffer.isBuffer(row.blob) ? row.blob : Buffer.from(row.blob);
+    return Buffer.isBuffer(row.image_blob) ? row.image_blob : Buffer.from(row.image_blob);
+}
+
+/**
+ * Load the packed fingerprints a Full-mode check compares against.
+ * @param {number} monitorId Monitor ID
+ * @returns {Promise<{day: Buffer|null, night: Buffer|null}>} Fingerprint per stored slot
+ */
+async function getFingerprints(monitorId) {
+    const rows = await R.getAll("SELECT slot, fingerprint FROM monitor_stream_reference WHERE monitor_id = ?", [
+        monitorId,
+    ]);
+    const out = { day: null, night: null };
+    for (const row of rows) {
+        if ((row.slot === "day" || row.slot === "night") && row.fingerprint) {
+            out[row.slot] = Buffer.isBuffer(row.fingerprint) ? row.fingerprint : Buffer.from(row.fingerprint);
+        }
+    }
+    return out;
+}
+
+/**
+ * Metadata about a monitor's references for the edit form — no image
+ * bytes.
+ * @param {number} monitorId Monitor ID
+ * @returns {Promise<{day: object|null, night: object|null}>} Per stored slot: {byteSize, url, updatedAt} or null
+ */
+async function getReferenceInfo(monitorId) {
+    const rows = await R.getAll(
+        "SELECT slot, LENGTH(image_blob) AS byte_size, source_url, updated_at FROM monitor_stream_reference WHERE monitor_id = ?",
+        [monitorId]
+    );
+    const out = { day: null, night: null };
+    for (const row of rows) {
+        if (row.slot === "day" || row.slot === "night") {
+            out[row.slot] = {
+                byteSize: Number(row.byte_size) || 0,
+                url: row.source_url || null,
+                updatedAt: row.updated_at,
+            };
+        }
+    }
+    return out;
 }
 
 /**
@@ -326,7 +358,7 @@ async function persistFrameImage(args) {
         trx = await R.begin();
         await trx.exec(
             "INSERT INTO monitor_stream_down_image (monitor_id, kind, image_blob, captured_at) VALUES (?, ?, ?, ?)",
-            [monitorId, kind, thumb, new Date().toISOString()]
+            [monitorId, kind, thumb, nowForDb()]
         );
         await trx.exec(
             `DELETE FROM monitor_stream_down_image
@@ -356,11 +388,13 @@ async function persistFrameImage(args) {
 
 module.exports = {
     VALID_SLOTS,
-    columnsForSlot,
+    storedSlot,
     uploadBlob,
     uploadUrl,
     refreshUrl,
     deleteSlot,
     getBlob,
+    getFingerprints,
+    getReferenceInfo,
     persistFrameImage,
 };

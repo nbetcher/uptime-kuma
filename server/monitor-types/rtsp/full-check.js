@@ -1,17 +1,16 @@
 const { UP, log } = require("../../../src/util");
 const { messages } = require("./messages");
-const { NodeAvFrameSource, withDeadline } = require("./frame-source");
+const { captureFrames } = require("./frame-capture");
+const { verifyTlsEndpoint } = require("./basic-probe");
 const { validateJpegStructure, fingerprint, distance, FP_TOTAL_BITS } = require("./image-pipeline");
-const { persistFrameImage } = require("./reference-store");
+const { getFingerprints, persistFrameImage } = require("./reference-store");
 
 const DEFAULT_THRESHOLD = 24;
-// Best-effort metadata probe; bounded so a hung demuxer never stalls
-// the check past the wall-clock budget (matches enhanced-check.js).
-const KEYFRAME_PROBE_MS = 750;
 
 /**
  * Full-mode entry point: capture one frame, fingerprint, compare
  * against the Day/Night references. See HLDS §5.7 and FR-015/FR-016.
+ * Decoding happens in a worker process (frame-capture.js).
  * @param {object} monitor Monitor row
  * @param {object} heartbeat Heartbeat to populate
  * @param {object} ctx Preflight context
@@ -19,88 +18,41 @@ const KEYFRAME_PROBE_MS = 750;
  */
 async function run(monitor, heartbeat, ctx) {
     const startMs = Date.now();
-    let source = null;
-    let jpeg;
-    let keyframeIntervalSec = null;
 
-    try {
-        source = await NodeAvFrameSource.open(ctx);
-
-        // UI-011: stash keyframe interval for the Test button warning.
-        try {
-            keyframeIntervalSec = await withDeadline(
-                source.getKeyframeInterval(),
-                KEYFRAME_PROBE_MS,
-                null
-            );
-        } catch (e) {
-            log.debug("rtsp", `full: keyframe-interval probe failed: ${e.message}`);
-        }
-        let frame = null;
-        // Pull a small number of attempts so a single bad frame
-        // doesn't fail the whole check; bail on the first valid
-        // JPEG. Each attempt is bounded by the remaining wall-clock
-        // budget (MR13 / OP-003).
-        for (let attempts = 0; attempts < 5; attempts++) {
-            const remaining = ctx.budgetMs - (Date.now() - startMs);
-            if (remaining <= 0) {
-                break;
-            }
-            try {
-                frame = await source.next(remaining);
-            } catch (e) {
-                throw new Error(messages.DECODE_FAILED(e.message || String(e)));
-            }
-            if (frame === null) {
-                break;
-            }
-            try {
-                jpeg = await source.toJpeg(frame);
-                await validateJpegStructure(jpeg);
-                break;
-            } catch (e) {
-                log.debug("rtsp", `full: discarding invalid frame: ${e.message}`);
-                jpeg = null;
-            } finally {
-                if (frame && typeof frame.free === "function") {
-                    frame.free();
-                }
-                frame = null;
-            }
-        }
-        if (!jpeg) {
-            throw new Error(messages.NO_FRAME());
-        }
-    } finally {
-        if (source) {
-            await source.close();
-        }
+    // References first: a misconfigured monitor fails without opening
+    // a camera session.
+    const refs = monitor.id ? await getFingerprints(monitor.id) : { day: null, night: null };
+    const separate = monitor.stream_separate_day_night !== false && monitor.stream_separate_day_night !== 0;
+    if (!refs.day || (separate && !refs.night)) {
+        throw new Error(messages.MISSING_REFERENCE());
     }
+
+    await verifyTlsEndpoint({ ...ctx, timeoutMs: Math.min(ctx.timeoutMs, ctx.budgetMs) });
+
+    const capture = await captureFrames(ctx, {
+        count: 1,
+        budgetMs: Math.max(1000, ctx.budgetMs - (Date.now() - startMs)),
+    });
+    const jpeg = capture.frames[0];
+    if (!jpeg) {
+        throw new Error(messages.NO_FRAME());
+    }
+    await validateJpegStructure(jpeg);
 
     const live = await fingerprint(jpeg);
 
     const thresholdRaw = parseInt(monitor.stream_match_threshold, 10);
     const threshold = Number.isFinite(thresholdRaw) ? thresholdRaw : DEFAULT_THRESHOLD;
-    const dayHash = monitor.stream_reference_day_hash ? Buffer.from(monitor.stream_reference_day_hash) : null;
-    const nightHash = monitor.stream_reference_night_hash ? Buffer.from(monitor.stream_reference_night_hash) : null;
-    const separate = monitor.stream_separate_day_night !== false && monitor.stream_separate_day_night !== 0;
-
-    if (separate && (!dayHash || !nightHash)) {
-        throw new Error(messages.MISSING_REFERENCE());
-    }
-    if (!separate && !dayHash) {
-        throw new Error(messages.MISSING_REFERENCE());
-    }
 
     let scoreDay = null;
     let scoreNight = null;
     let matchedSlot = null;
     if (separate) {
-        scoreDay = distance(live, dayHash, "day");
-        scoreNight = distance(live, nightHash, "night");
+        scoreDay = distance(live, refs.day, "day");
+        scoreNight = distance(live, refs.night, "night");
         matchedSlot = scoreNight < scoreDay ? "Night" : "Day";
     } else {
-        scoreDay = distance(live, dayHash, "single");
+        scoreDay = distance(live, refs.day, "single");
         matchedSlot = "single";
     }
 
@@ -109,16 +61,18 @@ async function run(monitor, heartbeat, ctx) {
     heartbeat.ping = Date.now() - startMs;
     // UI-011: only the Test button consumes this. The scheduled-check
     // path's `heartbeat` is a frozen RedBean bean; adding unmodelled
-    // properties would cause R.store to write `keyframe_interval_sec`.
+    // properties would make R.store write a non-existent column.
     // The socket handler sets `_isTestStream` on its ephemeral monitor.
-    if (monitor._isTestStream && keyframeIntervalSec != null) {
-        heartbeat.keyframeIntervalSec = keyframeIntervalSec;
+    if (monitor._isTestStream && capture.firstFrameMs != null) {
+        heartbeat.firstFrameMs = capture.firstFrameMs;
     }
 
     if (best <= threshold) {
         heartbeat.status = UP;
         heartbeat.msg = messages.MATCH_OK(matchedSlot, best);
-        if (monitor.stream_status_thumbnail || monitor.stream_keep_down_images) {
+        // The "match" image is only ever shown on the public status
+        // page, so only that opt-in pays for the write.
+        if (monitor.stream_status_thumbnail) {
             try {
                 await persistFrameImage({
                     monitorId: monitor.id,

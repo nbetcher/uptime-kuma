@@ -42,6 +42,24 @@ function computeBudget(monitor) {
 }
 
 /**
+ * Socket/IO timeout for a check, in milliseconds.
+ *
+ * `monitor.timeout` is seconds, but the monitor loop rewrites a zero
+ * timeout to `interval * 1000 * 0.8` (a millisecond value) at runtime,
+ * so the raw column cannot be trusted. Clamp to [1 s, 80 % of the
+ * interval]; fall back to 10 s when unset or invalid.
+ * @param {object} monitor Monitor row
+ * @returns {number} Timeout in milliseconds
+ */
+function computeTimeout(monitor) {
+    const intervalSec = parseInt(monitor.interval, 10) || 60;
+    const maxMs = Math.max(1000, Math.floor(intervalSec * 1000 * 0.8));
+    const sec = Number(monitor.timeout);
+    const ms = Number.isFinite(sec) && sec > 0 ? Math.round(sec * 1000) : 10000;
+    return Math.max(1000, Math.min(maxMs, ms));
+}
+
+/**
  * Preflight: parse the URL, validate scheme, normalise transport, fold
  * URL-embedded credentials into the form-supplied credentials, compute
  * the wall-clock budget. Returns a `ctx` object consumed by the
@@ -127,7 +145,7 @@ async function preflight(monitor) {
     const tlsVerify = !monitor.getIgnoreTls?.() && (proto === "rtsps" || proto === "rtmps");
     const transport = (monitor.stream_transport || "tcp").toLowerCase();
     const budgetMs = computeBudget(monitor);
-    const timeoutMs = (parseInt(monitor.timeout, 10) || 10) * 1000;
+    const timeoutMs = computeTimeout(monitor);
 
     return {
         url: url.toString(),
@@ -166,6 +184,7 @@ function urlContainsRtspTransport(urlStr) {
 module.exports = {
     DEFAULT_PORTS,
     computeBudget,
+    computeTimeout,
     preflight,
     scrubUrlCredentialsForLog,
     urlContainsRtspTransport,

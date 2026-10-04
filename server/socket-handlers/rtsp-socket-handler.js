@@ -3,7 +3,13 @@ const { checkLogin } = require("../util-server");
 const { log } = require("../../src/util");
 
 const VALID_SLOTS = ["day", "night", "single"];
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+// The browser downscales references to ≤1280 px JPEG before sending
+// (ReferenceImagePanel.vue), and the server canonicalises to 640 px
+// anyway. Keeping uploads well under socket.io's default 1 MB message
+// cap means the cap does not have to be raised for every client —
+// including unauthenticated ones.
+const MAX_UPLOAD_BYTES = 700 * 1024;
 
 /**
  * Wrap a socket.io ack callback so handlers can call it freely
@@ -19,12 +25,14 @@ function safeCallback(cb) {
 
 /**
  * Load the monitor row and assert (a) it exists, (b) it is an RTSP
- * monitor, (c) the calling socket's user owns it.
+ * monitor unless `requireRtsp` is false, (c) the calling socket's user
+ * owns it.
  * @param {object} socket Socket.io socket (must have userID)
  * @param {number} monitorId Monitor id
+ * @param {boolean} requireRtsp Reject non-RTSP monitors (default true)
  * @returns {Promise<object>} The bean
  */
-async function loadMonitorOrThrow(socket, monitorId) {
+async function loadMonitorOrThrow(socket, monitorId, requireRtsp = true) {
     const bean = await R.findOne("monitor", " id = ? ", [monitorId]);
     if (!bean) {
         throw new Error("Monitor not found");
@@ -37,7 +45,7 @@ async function loadMonitorOrThrow(socket, monitorId) {
     if (Number(bean.user_id) !== Number(socket.userID)) {
         throw new Error("Permission denied");
     }
-    if (bean.type !== "rtsp") {
+    if (requireRtsp && bean.type !== "rtsp") {
         throw new Error("Not a stream monitor");
     }
     return bean;
@@ -64,43 +72,55 @@ function monitorHostname(bean) {
 }
 
 /**
- * Decode the hex fingerprint carried by the edit form into the Buffer
- * shape Full mode expects from a DB bean.
- * @param {string|null} hash Hex fingerprint from Monitor.toJSON()
- * @returns {Buffer|null} Decoded hash or null
+ * Decode an uploaded reference image sent either as binary (socket.io
+ * delivers a Buffer) or as a base64 string (older clients).
+ * @param {unknown} data Upload payload
+ * @returns {Buffer} Image bytes
  */
-function decodeReferenceHash(hash) {
-    if (!hash || typeof hash !== "string") {
-        return null;
+function decodeUpload(data) {
+    let bytes;
+    if (Buffer.isBuffer(data)) {
+        bytes = data;
+    } else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+        bytes = Buffer.from(data.buffer ?? data, data.byteOffset ?? 0, data.byteLength);
+    } else if (typeof data === "string") {
+        bytes = Buffer.from(data, "base64");
+    } else {
+        throw new Error("upload data must be binary or base64");
     }
-    const trimmed = hash.trim();
-    if (!/^[0-9a-f]{32}$/i.test(trimmed)) {
-        return null;
+    if (bytes.length === 0) {
+        throw new Error("empty upload");
     }
-    return Buffer.from(trimmed, "hex");
+    if (bytes.length > MAX_UPLOAD_BYTES) {
+        throw new Error(`upload exceeds ${MAX_UPLOAD_BYTES} bytes`);
+    }
+    return bytes;
 }
 
 /**
  * Build an ephemeral monitor-shaped object from a form payload for
  * the test-stream probe. No DB writes occur.
  *
- * If the form carries a real monitor id (`formMonitor.id`) the test
- * uses that for the per-monitor mutex so a Test can't race a
- * scheduled check against the same camera. The persistence-side
- * write paths are gated to `false` here, so reusing the real id is
- * safe — no rows are inserted or updated.
+ * If the form belongs to a saved monitor, the test uses its id for the
+ * per-monitor mutex (so a Test can't race a scheduled check against
+ * the same camera) and Full mode compares against that monitor's
+ * stored references. The persistence-side write paths are gated to
+ * `false` here, so reusing the real id is safe — no rows are inserted
+ * or updated.
  * @param {object} formMonitor Form state from the frontend
+ * @param {number|null} savedId Id of the caller's saved monitor, if any
  * @returns {object} Stub that satisfies `RtspMonitorType.check()`
  */
-function buildEphemeralMonitor(formMonitor) {
-    const realId = parseInt(formMonitor.id, 10);
-    const id = Number.isFinite(realId) && realId > 0 ? realId : `test-${Date.now()}`;
+function buildEphemeralMonitor(formMonitor, savedId) {
+    const id = savedId || `test-${Date.now()}`;
     return {
         id,
         // Marker read by enhanced/full check so they may attach
-        // non-DB-column diagnostics (e.g. keyframeIntervalSec) to the
-        // heartbeat object. Never set on a real Monitor bean — keeps
-        // R.store off the path for those properties.
+        // non-DB-column diagnostics (firstFrameMs) to the heartbeat
+        // object, and by RtspMonitorType so a Test does not count
+        // toward the monitor's skip allowance. Never set on a real
+        // Monitor bean — keeps R.store off the path for those
+        // properties.
         _isTestStream: true,
         url: formMonitor.url,
         basic_auth_user: formMonitor.basic_auth_user || "",
@@ -118,8 +138,6 @@ function buildEphemeralMonitor(formMonitor) {
         // when a real monitor.id is reused for the mutex.
         stream_status_thumbnail: false,
         stream_keep_down_images: false,
-        stream_reference_day_hash: decodeReferenceHash(formMonitor.streamReferenceDayHash),
-        stream_reference_night_hash: decodeReferenceHash(formMonitor.streamReferenceNightHash),
         timeout: formMonitor.timeout || 10,
         interval: formMonitor.interval || 60,
         getIgnoreTls: () => Boolean(formMonitor.ignoreTls),
@@ -132,10 +150,12 @@ function buildEphemeralMonitor(formMonitor) {
  * Register the stream-monitor socket handlers on a socket.
  *
  * Events:
- * - rtsp:uploadReference(monitorId, slot, { data?, url? }, cb)
+ * - rtsp:uploadReference(monitorId, slot, { data?, url? }, cb) — data is binary
+ * - rtsp:getReferenceInfo(monitorId, cb) — slot metadata, no image bytes
  * - rtsp:getReference(monitorId, slot, cb) — returns base64
  * - rtsp:refreshReference(monitorId, slot, cb)
  * - rtsp:deleteReference(monitorId, slot, cb)
+ * - rtsp:listDownImages(monitorId, cb)
  * - rtsp:testStream(formMonitor, cb)
  * - rtsp:getModuleStatus(cb)
  * @param {object} socket socket.io socket
@@ -148,16 +168,16 @@ module.exports.rtspSocketHandler = function (socket) {
             checkLogin(socket);
             const { RtspMonitorType } = require("../monitor-types/rtsp");
             const { messages } = require("../monitor-types/rtsp/messages");
-            const status = RtspMonitorType.moduleStatus();
+            const status = await RtspMonitorType.moduleStatus();
             let msg = null;
             let detail = null;
 
             if (!status.enhancedAvailable) {
                 msg = messages.NODE_AV_UNAVAILABLE;
-                detail = status.enhancedLoadError ? status.enhancedLoadError.message : null;
+                detail = status.enhancedLoadError;
             } else if (!status.fullAvailable) {
                 msg = messages.FULL_MODE_UNAVAILABLE;
-                detail = status.fullLoadError ? status.fullLoadError.message : null;
+                detail = status.fullLoadError;
             }
 
             cb({
@@ -194,30 +214,31 @@ module.exports.rtspSocketHandler = function (socket) {
                     userId: socket.userID || null,
                 });
             } else if (body.data) {
-                let bytes;
-                try {
-                    bytes = Buffer.from(body.data, "base64");
-                } catch (e) {
-                    throw new Error(`invalid base64: ${e.message}`);
-                }
-                if (bytes.length === 0) {
-                    throw new Error("empty upload");
-                }
-                if (bytes.length > MAX_UPLOAD_BYTES) {
-                    throw new Error(`upload exceeds ${MAX_UPLOAD_BYTES} bytes`);
-                }
                 result = await refStore.uploadBlob({
                     monitorId: bean.id,
                     slot,
-                    bytes,
+                    bytes: decodeUpload(body.data),
                     userId: socket.userID || null,
                 });
             } else {
-                throw new Error("either `data` (base64) or `url` is required");
+                throw new Error("either `data` (binary or base64) or `url` is required");
             }
             cb({ ok: true, ...result });
         } catch (e) {
             log.error("rtsp", `uploadReference: ${e.message}`);
+            cb({ ok: false, msg: e.message });
+        }
+    });
+
+    socket.on("rtsp:getReferenceInfo", async (monitorId, callback) => {
+        const cb = safeCallback(callback);
+        try {
+            checkLogin(socket);
+            const bean = await loadMonitorOrThrow(socket, parseInt(monitorId, 10));
+            const refStore = require("../monitor-types/rtsp/reference-store");
+            cb({ ok: true, references: await refStore.getReferenceInfo(bean.id) });
+        } catch (e) {
+            log.error("rtsp", `getReferenceInfo: ${e.message}`);
             cb({ ok: false, msg: e.message });
         }
     });
@@ -327,11 +348,21 @@ module.exports.rtspSocketHandler = function (socket) {
             if (!formMonitor || formMonitor.type !== "rtsp") {
                 throw new Error("test-stream is for type=rtsp only");
             }
-            const stub = buildEphemeralMonitor(formMonitor);
+            // A saved monitor's id is only reused after an ownership
+            // check: it selects which stored references Full mode
+            // compares against. The type is not checked, so a monitor
+            // being converted to RTSP can be tested before saving.
+            const formId = parseInt(formMonitor.id, 10);
+            let savedId = null;
+            if (Number.isFinite(formId) && formId > 0) {
+                savedId = (await loadMonitorOrThrow(socket, formId, false)).id;
+            }
+            const stub = buildEphemeralMonitor(formMonitor, savedId);
             const heartbeat = { msg: "", status: 0 };
             const { RtspMonitorType } = require("../monitor-types/rtsp");
+            const { computeBudget } = require("../monitor-types/rtsp/url-parse");
             const type = new RtspMonitorType();
-            let warningKeyframeInterval = null;
+            let warningSlowFirstFrame = null;
 
             try {
                 await type.check(stub, heartbeat, null);
@@ -344,20 +375,18 @@ module.exports.rtspSocketHandler = function (socket) {
                 return;
             }
 
-            // UI-011: surface a localised warning when the keyframe
-            // cadence is too sparse for the configured interval. The
-            // check function (enhanced-check.js / full-check.js)
-            // populates heartbeat.keyframeIntervalSec on the same
-            // session it already opened — no second round-trip.
-            if (stub.stream_mode === "enhanced" || stub.stream_mode === "full") {
-                if (heartbeat.keyframeIntervalSec != null) {
-                    const halfInterval = (stub.interval || 60) / 2;
-                    if (heartbeat.keyframeIntervalSec > halfInterval) {
-                        warningKeyframeInterval = {
-                            key: "RTSP Keyframe Interval Warning",
-                            args: [Math.round(heartbeat.keyframeIntervalSec), stub.interval || 60],
-                        };
-                    }
+            // UI-011: warn when the first decoded frame took more than
+            // half the time budget. That is almost always a long
+            // keyframe (GOP) interval — the decoder has to wait for the
+            // next I-frame — and means scheduled checks will sometimes
+            // run out of budget.
+            if (heartbeat.firstFrameMs != null) {
+                const budgetMs = computeBudget(stub);
+                if (heartbeat.firstFrameMs > budgetMs / 2) {
+                    warningSlowFirstFrame = {
+                        key: "RTSP Slow First Frame Warning",
+                        args: [(heartbeat.firstFrameMs / 1000).toFixed(1), Math.round(budgetMs / 1000)],
+                    };
                 }
             }
 
@@ -366,7 +395,7 @@ module.exports.rtspSocketHandler = function (socket) {
                 mode: stub.stream_mode,
                 msg: heartbeat.msg,
                 ping: heartbeat.ping,
-                warningKeyframeInterval,
+                warningSlowFirstFrame,
             });
         } catch (e) {
             log.error("rtsp", `testStream: ${e.message}`);

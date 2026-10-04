@@ -118,6 +118,37 @@ function openSocket(ctx) {
 }
 
 /**
+ * Time left of a probe's `ctx.timeoutMs` allowance.
+ * @param {object} ctx Preflight context
+ * @param {number} startTime Probe start (Date.now())
+ * @returns {number} Remaining milliseconds, at least 1
+ */
+function remainingMs(ctx, startTime) {
+    return Math.max(1, ctx.timeoutMs - (Date.now() - startTime));
+}
+
+/**
+ * Verify the TLS certificate chain and hostname of an RTSPS/RTMPS
+ * endpoint with Node's TLS stack, then disconnect.
+ *
+ * Enhanced/Full mode needs this because libav does not verify peer
+ * certificates by default (`tls_verify` defaults to 0), and options
+ * given to the demuxer are not guaranteed to reach the TLS connection
+ * the RTSP demuxer opens internally. The check runs against the same
+ * host:port immediately before the decode session. No-op for plaintext
+ * protocols or when the monitor ignores TLS errors.
+ * @param {object} ctx Preflight context
+ * @returns {Promise<void>}
+ */
+async function verifyTlsEndpoint(ctx) {
+    if (!ctx.tlsVerify || (ctx.protocol !== "rtsps" && ctx.protocol !== "rtmps")) {
+        return;
+    }
+    const socket = await openSocket(ctx);
+    socket.destroy();
+}
+
+/**
  * Read up to `maxBytes` from a socket, optionally stopping early when
  * `\r\n\r\n` is seen (RTSP head terminator). Closes the socket when
  * done.
@@ -293,11 +324,12 @@ async function probeRtsp(monitor, heartbeat, ctx) {
     const cseq = 1;
     const requestLine = `OPTIONS ${ctx.url} RTSP/1.0\r\nCSeq: ${cseq}\r\nUser-Agent: ${RTSP_USER_AGENT}\r\n\r\n`;
 
+    // One deadline for connect + request + response, not one each.
     const socket = await openSocket(ctx);
     let rawResponse;
     try {
         await writeSocket(socket, requestLine, "utf8");
-        rawResponse = await readBytes(socket, MAX_RESPONSE_BYTES, ctx.timeoutMs, true);
+        rawResponse = await readBytes(socket, MAX_RESPONSE_BYTES, remainingMs(ctx, startTime), true);
     } finally {
         if (!socket.destroyed) {
             socket.destroy();
@@ -344,7 +376,7 @@ async function probeRtmp(monitor, heartbeat, ctx) {
     let s0s1;
     try {
         await writeSocket(socket, c0c1);
-        s0s1 = await readBytes(socket, RTMP_HANDSHAKE_BYTES, ctx.timeoutMs, false);
+        s0s1 = await readBytes(socket, RTMP_HANDSHAKE_BYTES, remainingMs(ctx, startTime), false);
     } finally {
         if (!socket.destroyed) {
             socket.destroy();
@@ -399,5 +431,6 @@ module.exports = {
     parseRtspResponse,
     classifyRtspStatus,
     classifySocketError,
+    verifyTlsEndpoint,
     writeSocket,
 };

@@ -15,19 +15,19 @@ const VALID_MODES = ["basic", "enhanced", "full"];
  * Validate the stream-monitor-specific fields of a monitor payload
  * coming from the frontend.
  *
- * For a freshly-added monitor (`bean === null`) we cannot enforce
+ * For a freshly-added monitor (`references === null`) we cannot enforce
  * FR-019b's "Full mode requires references at save time" — references
  * can only be uploaded *after* the monitor row exists (they're keyed
  * by `monitor_id`). Instead, the runtime check throws
  * `MISSING_REFERENCE` until the user uploads references, which surfaces
  * as a DOWN heartbeat (matches NFR-010's "every plausible failure mode
  * is reported as a DOWN heartbeat"). FR-019b is enforced on
- * `editMonitor` where `bean` is populated.
+ * `editMonitor`, which passes the saved monitor's reference presence.
  * @param {object} monitor Incoming monitor JSON
- * @param {object} bean DB bean (null on add, populated on edit)
+ * @param {{day: boolean, night: boolean}|null} references Which reference slots exist (null on add)
  * @returns {void}
  */
-function validateStreamMonitor(monitor, bean) {
+function validateStreamMonitor(monitor, references) {
     if (monitor.type !== "rtsp") {
         return;
     }
@@ -82,24 +82,22 @@ function validateStreamMonitor(monitor, bean) {
 
     // FR-019b: Full mode requires at least one reference image.
     // Enforced only when we have a saved monitor row to inspect.
-    // For new monitors (bean=null), Full mode is permitted; the
+    // For new monitors (references=null), Full mode is permitted; the
     // runtime check throws MISSING_REFERENCE until references are
     // uploaded, which surfaces as a clear DOWN heartbeat.
-    if (mode === "full" && bean) {
-        const dayBlob = bean.stream_reference_day_blob;
-        const nightBlob = bean.stream_reference_night_blob;
+    if (mode === "full" && references) {
         const separate = monitor.streamSeparateDayNight !== false;
 
         if (separate) {
-            if (!dayBlob) {
+            if (!references.day) {
                 throw new Error("Full mode with Separate Day/Night requires a Day reference image");
             }
-            if (!nightBlob) {
+            if (!references.night) {
                 throw new Error("Full mode with Separate Day/Night requires a Night reference image");
             }
         } else {
             // Single-reference mode: Day slot reused.
-            if (!dayBlob) {
+            if (!references.day) {
                 throw new Error("Full mode requires a reference image");
             }
         }
@@ -107,13 +105,24 @@ function validateStreamMonitor(monitor, bean) {
 }
 
 /**
+ * Which reference slots a saved monitor has, for validateStreamMonitor.
+ * @param {number} monitorId Monitor ID
+ * @returns {Promise<{day: boolean, night: boolean}>} Presence per stored slot
+ */
+async function loadReferencePresence(monitorId) {
+    const { R } = require("redbean-node");
+    const rows = await R.getAll("SELECT slot FROM monitor_stream_reference WHERE monitor_id = ?", [monitorId]);
+    const slots = new Set(rows.map((row) => row.slot));
+    return { day: slots.has("day"), night: slots.has("night") };
+}
+
+/**
  * Persist the stream-monitor configuration fields onto a DB bean.
  * Used by both the `add` and `editMonitor` socket handlers so the
  * mapping rules (boolean coercion, ?? null) stay in one place.
  *
- * Reference BLOB columns are managed by the reference-upload socket
- * handler, NOT by this helper — leaving them out of the form-save
- * path prevents accidental clobber on edit.
+ * Reference images live in monitor_stream_reference and are managed
+ * by the reference-upload socket handlers, never by the form save.
  * @param {object} bean Monitor bean to mutate
  * @param {object} monitor Form payload
  * @returns {void}
@@ -144,5 +153,6 @@ module.exports = {
     VALID_TRANSPORTS,
     VALID_MODES,
     validateStreamMonitor,
+    loadReferencePresence,
     applyStreamFieldsToBean,
 };

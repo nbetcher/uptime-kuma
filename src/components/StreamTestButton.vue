@@ -13,11 +13,11 @@
             </div>
 
             <div
-                v-if="result.warningKeyframeInterval"
+                v-if="result.warningSlowFirstFrame"
                 class="alert alert-warning py-1 px-2 mb-1"
                 role="alert"
             >
-                {{ keyframeWarning(result.warningKeyframeInterval) }}
+                {{ localizedWarning(result.warningSlowFirstFrame) }}
             </div>
         </div>
     </div>
@@ -45,7 +45,7 @@ export default {
     },
 
     methods: {
-        keyframeWarning(w) {
+        localizedWarning(w) {
             // The server returns a structured warning (key + args)
             // so the operator-facing text can be localised here.
             if (!w || !w.key) {

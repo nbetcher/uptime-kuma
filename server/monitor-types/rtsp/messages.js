@@ -64,5 +64,9 @@ exports.messages = {
     NODE_AV_UNAVAILABLE: "node-av failed to load — Enhanced/Full mode unavailable on this platform",
     FULL_MODE_UNAVAILABLE: "Full mode unavailable — native image matching dependencies failed to load on this server",
     TIMED_OUT: (ms) => `timed out after ${ms}ms`,
+    CHECK_STARVED: (n, reason) => `check could not run ${n} times in a row: ${reason}`,
+    WORKER_FAILED: (reason) => `could not start frame worker: ${reason}`,
+    WORKER_CRASHED: (how) => `frame worker crashed (${how})`,
+    TLS_PRECHECK_FAILED: (reason) => `TLS verification failed: ${reason}`,
     DECODE_FAILED: (reason) => `decode failed: ${reason}`,
 };

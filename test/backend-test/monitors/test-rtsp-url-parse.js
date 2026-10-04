@@ -3,6 +3,7 @@ const assert = require("node:assert");
 const {
     preflight,
     computeBudget,
+    computeTimeout,
     scrubUrlCredentialsForLog,
     urlContainsRtspTransport,
 } = require("../../../server/monitor-types/rtsp/url-parse");
@@ -104,6 +105,26 @@ describe("url-parse preflight", () => {
         );
         assert.doesNotMatch(ctx.url, /rtsp_transport/);
         assert.strictEqual(ctx.transport, "tcp");
+    });
+});
+
+describe("computeTimeout", () => {
+    test("uses the monitor timeout in seconds", () => {
+        assert.strictEqual(computeTimeout({ timeout: 12, interval: 60 }), 12000);
+    });
+
+    test("caps at 80% of the interval", () => {
+        assert.strictEqual(computeTimeout({ timeout: 120, interval: 60 }), 48000);
+    });
+
+    test("survives the monitor loop rewriting timeout to milliseconds", () => {
+        // monitor.js sets timeout = interval * 1000 * 0.8 when it is 0.
+        assert.strictEqual(computeTimeout({ timeout: 48000, interval: 60 }), 48000);
+    });
+
+    test("falls back to 10 s when unset", () => {
+        assert.strictEqual(computeTimeout({ interval: 60 }), 10000);
+        assert.strictEqual(computeTimeout({ timeout: 0, interval: 60 }), 10000);
     });
 });
 
