@@ -46,7 +46,13 @@
                                     />
                                 </div>
                                 <div v-if="monitor.tags.length > 0" class="tags gap-1">
-                                    <Tag v-for="tag in monitor.tags" :key="tag" :item="tag" :size="'sm'" />
+                                    <Tag
+                                        v-for="tag in monitor.tags"
+                                        :key="tag"
+                                        :item="tag"
+                                        :size="'sm'"
+                                        :title="tag.name"
+                                    />
                                 </div>
                             </div>
                         </div>
