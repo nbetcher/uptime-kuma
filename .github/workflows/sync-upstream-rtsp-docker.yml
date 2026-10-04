@@ -16,7 +16,7 @@ on:
         type: string
         default: ""
       skip_build:
-        description: "Only pull and merge upstream into the sync branch; do not build or push a Docker image"
+        description: "Only merge upstream into rtsp-monitor; do not build or push a Docker image"
         required: false
         type: boolean
         default: false
@@ -58,14 +58,13 @@ jobs:
       latest_tag: ${{ steps.docker_tags.outputs.latest_tag }}
       short_sha: ${{ steps.docker_tags.outputs.short_sha }}
       source_revision: ${{ steps.build_source.outputs.source_revision }}
-      sync_branch: ${{ steps.merge.outputs.sync_branch }}
       ai_resolved: ${{ steps.merge.outputs.ai_resolved }}
       upstream_tag: ${{ steps.release.outputs.upstream_tag }}
 
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
-          ref: rtsp-monitor
+          ref: ${{ env.RTSP_BRANCH }}
           persist-credentials: false
           fetch-depth: 0
 
@@ -119,23 +118,9 @@ jobs:
           git fetch upstream "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
           git fetch --force origin "refs/heads/${RTSP_BRANCH}:refs/remotes/origin/${RTSP_BRANCH}"
 
-          safe_tag="$(printf "%s" "${UPSTREAM_TAG}" | tr -c 'A-Za-z0-9._-' '-')"
-          sync_branch="sync/upstream-${safe_tag}-rtsp"
+          git switch -C "${RTSP_BRANCH}" "origin/${RTSP_BRANCH}"
 
-          reuse=false
-          if git ls-remote --exit-code --heads origin "${sync_branch}" >/dev/null 2>&1; then
-            git fetch origin "refs/heads/${sync_branch}:refs/remotes/origin/${sync_branch}"
-
-            if git merge-base --is-ancestor "refs/tags/${UPSTREAM_TAG}" "origin/${sync_branch}" \
-               && git merge-base --is-ancestor "origin/${RTSP_BRANCH}" "origin/${sync_branch}"; then
-              reuse=true
-            fi
-          fi
-
-          if [ "${reuse}" = "true" ]; then
-            git switch -C "${sync_branch}" "origin/${sync_branch}"
-          else
-            git switch -C "${sync_branch}" "origin/${RTSP_BRANCH}"
+          if ! git merge-base --is-ancestor "refs/tags/${UPSTREAM_TAG}" HEAD; then
             git config merge.conflictStyle diff3
             git merge --no-commit --no-ff "refs/tags/${UPSTREAM_TAG}" || true
 
@@ -376,7 +361,7 @@ jobs:
               fi
 
               echo "ai_resolved=true" >> "${GITHUB_OUTPUT}"
-              echo "::warning::Merge conflicts were resolved by ${GEMINI_MODEL}. Review ${sync_branch}, then rerun this workflow to build and publish it."
+              echo "::warning::Merge conflicts were resolved by ${GEMINI_MODEL}. Review ${RTSP_BRANCH}, then rerun this workflow to build and publish it."
               commit_note="Merge conflicts resolved automatically with ${GEMINI_MODEL}; review before publishing."
             else
               commit_note="Workflow files are kept from ${RTSP_BRANCH}."
@@ -388,8 +373,6 @@ jobs:
             echo "needs_push=true" >> "${GITHUB_OUTPUT}"
           fi
 
-          echo "sync_branch=${sync_branch}" >> "${GITHUB_OUTPUT}"
-
       # No tokens in this step: it runs code from the freshly merged tree
       - name: Validate merged source installs and builds
         if: steps.merge.outputs.needs_push == 'true'
@@ -399,18 +382,17 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npm run build
 
-      - name: Push sync branch
+      - name: Push RTSP branch
         if: steps.merge.outputs.needs_push == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SYNC_BRANCH: ${{ steps.merge.outputs.sync_branch }}
         run: |
           set -euo pipefail
 
           auth_header="$(node -e 'process.stdout.write(Buffer.from(`x-access-token:${process.env.GH_TOKEN}`).toString("base64"))')"
           git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: basic ${auth_header}"
           trap 'git config --local --unset-all "http.https://github.com/.extraheader" || true' EXIT
-          git push origin "HEAD:refs/heads/${SYNC_BRANCH}" --force-with-lease
+          git push origin "HEAD:refs/heads/${RTSP_BRANCH}"
           git config --local --unset-all "http.https://github.com/.extraheader"
           trap - EXIT
 
@@ -440,7 +422,6 @@ jobs:
         id: build_source
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SYNC_BRANCH: ${{ steps.merge.outputs.sync_branch }}
           UPSTREAM_TAG: ${{ steps.release.outputs.upstream_tag }}
         run: |
           set -euo pipefail
@@ -455,11 +436,10 @@ jobs:
           fi
 
           git commit -m "Prepare RTSP Docker image for ${UPSTREAM_TAG}"
-          git fetch origin "refs/heads/${SYNC_BRANCH}:refs/remotes/origin/${SYNC_BRANCH}"
           auth_header="$(node -e 'process.stdout.write(Buffer.from(`x-access-token:${process.env.GH_TOKEN}`).toString("base64"))')"
           git config --local "http.https://github.com/.extraheader" "AUTHORIZATION: basic ${auth_header}"
           trap 'git config --local --unset-all "http.https://github.com/.extraheader" || true' EXIT
-          git push origin "HEAD:refs/heads/${SYNC_BRANCH}" --force-with-lease
+          git push origin "HEAD:refs/heads/${RTSP_BRANCH}"
           git config --local --unset-all "http.https://github.com/.extraheader"
           trap - EXIT
           echo "source_revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
@@ -555,13 +535,13 @@ jobs:
                   if (forcePublish) {
                       throw new Error("skip_build and force_publish cannot both be set.");
                   }
-                  console.log(`::notice::skip_build requested. Upstream merged into the sync branch; ${versionShaTag} will not be built or pushed.`);
+                  console.log(`::notice::skip_build requested. Upstream merged into ${process.env.RTSP_BRANCH}; ${versionShaTag} will not be built or pushed.`);
                   fs.appendFileSync(process.env.GITHUB_OUTPUT, "publish=false\n");
                   return;
               }
 
               if (aiResolved) {
-                  console.log(`::notice::Merge conflicts were resolved by AI. ${versionShaTag} is not published until the sync branch is reviewed and this workflow is rerun.`);
+                  console.log(`::notice::Merge conflicts were resolved by AI. ${versionShaTag} is not published until ${process.env.RTSP_BRANCH} is reviewed and this workflow is rerun.`);
                   fs.appendFileSync(process.env.GITHUB_OUTPUT, "publish=false\n");
                   return;
               }
@@ -604,7 +584,7 @@ jobs:
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
-          ref: ${{ needs.prepare-rtsp-source.outputs.sync_branch }}
+          ref: ${{ needs.prepare-rtsp-source.outputs.source_revision }}
           persist-credentials: false
           fetch-depth: 1
 
