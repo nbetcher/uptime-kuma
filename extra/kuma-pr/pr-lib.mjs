@@ -4,7 +4,7 @@
  * @returns {object} An object with name and branch properties.
  */
 export function parsePrName(prName) {
-    let name = "louislam";
+    let name = "nbetcher";
     let branch;
 
     const errorMessage = "Please set a repo to the environment variable 'UPTIME_KUMA_GH_REPO' (e.g. mhkarimi1383:goalert-notification)";

@@ -29,9 +29,13 @@ any failure short-circuits to DOWN with a precise message:
 
 1. Resolve hostname (DNS). On NXDOMAIN/SERVFAIL: DOWN with
    `"DNS resolution failed: <reason>"`.
-2. URL parse and validate. Reject URLs with embedded credentials when the
-   user has also supplied a separate username/password (ambiguous). Reject
-   URLs whose scheme does not match the configured protocol.
+2. URL parse and validate. If the URL contains embedded credentials
+   (`rtsp://user:pass@host/path`) **and** the user has also supplied
+   separate username/password form fields, a non-blocking warning is
+   shown in the UI; the form fields (generic `username`/`password`
+   columns) are canonical and take precedence. The embedded URL
+   credentials are stripped before passing the URL to the decode stack.
+   Reject URLs whose scheme does not match the configured protocol.
 3. If TLS is in use and the user has *not* disabled cert validation,
    apply Node.js TLS defaults (RFC 5280 chain validation, hostname check).
 4. Acquire a per-monitor concurrency token (see
@@ -57,8 +61,8 @@ Basic mode does *not* spawn FFmpeg. It uses Node.js sockets directly:
   **[02-protocol-coverage.md](./02-protocol-coverage.md)** §5. Read up to
   4 KB of response. Pass if the first 5 bytes are `RTSP/` and a matching
   `CSeq:` is echoed; status codes 2xx, 401, 403, 404, 405 all count as UP
-  (server is alive). Status codes 5xx pass with a warning message in the
-  heartbeat.
+  (server is alive). Status codes 3xx (redirects) count as UP with a warning.
+  Status codes 5xx pass with a warning message in the heartbeat.
 - **RTMP / RTMPS:** open the socket, send 1+1536 bytes (C0 then C1), read
   1537 bytes (S0 then S1), assert `S0 == C0`. Close. No C2 sent.
 
@@ -75,7 +79,8 @@ classified Inactive — see
 | TCP timeout (configured per-monitor, default 10 s) | DOWN |
 | TLS error and `verify cert` is enabled | DOWN with cert message |
 | Response does not begin with protocol marker | DOWN with `"server did not speak RTSP"` / `"server did not speak RTMP"` |
-| RTSP 2xx/3xx/401/403/404/405, or RTMP S0/S1 valid | UP |
+| RTSP 2xx/401/403/404/405, or RTMP S0/S1 valid | UP |
+| RTSP 3xx | UP with warning (redirect from an RTSP server still proves liveness) |
 | RTSP 5xx | UP with warning |
 
 ### Resource cost
@@ -122,10 +127,10 @@ detect frozen-frame stalls.
   the captured frames. If all frames are byte-identical → DOWN with
   `"stream appears frozen — N identical frames"`.
 - **Black/uniform detection:** decode the last frame to greyscale 32×32
-  via `sharp`, compute mean and standard deviation. If `mean < 5/255` or
-  `stddev < 2/255` → DOWN with `"stream appears black or uniform"`. The
-  thresholds are chosen so a real night-vision IR scene with even a single
-  illuminated object passes.
+  via `sharp`, compute mean and standard deviation. If `mean < 5` **and**
+  `stddev < 2` (on a 0–255 raw scale) → DOWN with
+  `"stream appears black or uniform"`. The thresholds are chosen so a
+  real night-vision IR scene with even a single illuminated object passes.
 
 ### Pass / fail
 
@@ -134,7 +139,7 @@ detect frozen-frame stalls.
 | Subprocess timeout / non-zero exit before any frame | DOWN with `"no frames received within Ns"` |
 | Fewer than 2 valid JPEGs captured | DOWN with `"only N/M valid frames"` |
 | All captured frames byte-identical | DOWN — frozen |
-| Last frame mean luminance < 5 and stddev < 2 | DOWN — black/uniform |
+| Last frame mean luminance < 5 and stddev < 2 (0–255 scale) | DOWN — black/uniform |
 | Otherwise | UP, with frame count in heartbeat message |
 
 ### Resource cost
@@ -163,26 +168,26 @@ reference image(s).
 
 - **Capture:** one frame via the same `node-av` path as Enhanced, exiting
   as soon as the first decoded video frame is available.
-- **Fingerprint:** `sharp` pipeline to greyscale → normalise → resize 32×32
-  → compute combined fingerprint (dHash + edge-aware variant + mean
-  luminance). Full algorithm and rationale in
+- **Fingerprint:** `sharp` pipeline to greyscale → normalise → resize 9×8
+  → compute combined fingerprint (64-bit luminance dHash + 64-bit
+  edge-aware dHash = 128 bits). Full algorithm and rationale in
   **[05-image-comparison-strategy.md](./05-image-comparison-strategy.md)**.
 - **Reference selection:** if "Separate Day/Night" is enabled (default),
   the live frame is compared against both Day and Night fingerprints; the
   *minimum* Hamming distance is taken. This is the "try both, lowest
   wins" strategy you selected.
 - **Pass criterion:** minimum Hamming distance ≤ user-configured
-  threshold (default 12 of 64 bits — the value comes from the Zauner
+  threshold (default 24 of 128 bits — the value comes from the Zauner
   thesis on perceptual-hash robustness for "same scene, lighting variant"
-  — see **[05-image-comparison-strategy.md](./05-image-comparison-strategy.md)** §6).
+  — see **[05-image-comparison-strategy.md](./05-image-comparison-strategy.md)** §4).
 
 ### Pass / fail
 
 | Outcome | Status |
 |---|---|
-| Frame capture fails (any Enhanced-failure reason) | DOWN with the Enhanced-equivalent reason |
+| Frame capture fails (connection refused, TCP timeout, TLS error, or decode error producing zero frames) | DOWN with the capture-failure reason |
 | Live frame fingerprint successfully computed | Continue to compare |
-| `min(distance(live, Day), distance(live, Night)) ≤ threshold` | UP with `"matched <Day|Night> at distance N"` |
+| `min(distance(live, Day), distance(live, Night)) ≤ threshold` | UP with `"matched <Day|Night> at distance N/128"` |
 | Both distances > threshold | DOWN with `"scene mismatch: distance N > threshold T"` |
 
 ### Resource cost

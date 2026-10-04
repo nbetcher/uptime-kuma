@@ -3,11 +3,12 @@
 This directory contains the formal requirements and design-level documentation
 for adding RTSP and RTMP video-stream monitoring to this Uptime Kuma fork.
 
-**Status:** Round 2 — round-1 decisions captured in
-**[08-open-questions.md](./08-open-questions.md)** decisions log. Round-2
-adversarial review pending. A High-Level Design Specification will follow
-once round-2 review is complete and the remaining items in §08 (Q13–Q20) are
-either resolved or explicitly deferred.
+**Status:** HLDS round-1 complete. The High-Level Design Specification is
+in **[10-high-level-design.md](./10-high-level-design.md)** and resolves
+the round-2 open items (Q13–Q21) from
+**[08-open-questions.md](./08-open-questions.md)** plus a handful of
+sanity-check corrections cataloged in §18 of the HLDS. Implementation may
+proceed once the HLDS has received an adversarial review pass.
 
 **Implementation strategy (agreed by fork owner):**
 1. **PR 1 (fork-only):** all three modes shipped together to `nbetcher/uptime-kuma`.
@@ -33,16 +34,21 @@ upstream Uptime Kuma maintainers (notably `@CommanderStorm` and `@louislam`).
 | 7 | [07-script-analysis.md](./07-script-analysis.md) | Critical review of the existing `check_rtsp_stream_up.sh` script and how Enhanced mode supersedes it |
 | 8 | [08-open-questions.md](./08-open-questions.md) | Pushbacks on parts of the original requirements, alternatives I recommend you weigh, items still to decide |
 | 9 | [09-traceability-matrix.md](./09-traceability-matrix.md) | Two-way map between original prompt bullets, REQ-IDs, and reviewer concerns — for adversarial review |
+| 10 | [10-high-level-design.md](./10-high-level-design.md) | High-Level Design Specification — module layout, data model, interfaces, sequence flows, error model, test strategy. Resolves Q13–Q21 and corrects sanity-check items found while writing the HLDS |
 
 ## How to read these
 
 Each document is self-contained but cross-references the others. For an
-adversarial review pass, I suggest:
+adversarial review pass on the HLDS, I suggest:
 
 1. Skim **01** to confirm scope alignment.
-2. Read **08** first if you want to argue with my conclusions early.
-3. Read **04** end-to-end as the canonical contract.
+2. Read **04** end-to-end as the canonical requirements contract.
+3. Read **10** end-to-end as the canonical design contract. Pay
+   particular attention to §17 (round-2 resolutions), §18 (sanity-check
+   corrections to docs 01–09), and §19 (open items deferred to code
+   time).
 4. Use **09** to verify nothing in your original brief was dropped.
+5. Read **08** if you want to argue with the planning-round decisions.
 
 ## Conventions
 

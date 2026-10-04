@@ -60,13 +60,16 @@ A bare TCP-port-open SHALL NOT count as Basic-pass.
 
 #### FR-012 — Vendor quirk tolerance in Basic
 **Must.** **REQUIRED-BY-BRIEF.**
-Basic mode MUST treat HTTP-style RTSP responses with status 401, 403,
-404, 405 as UP. It MUST treat status 5xx as UP-with-warning. It MUST
-require the leading `RTSP/` prefix on the response.
+Basic mode MUST treat RTSP responses with status 2xx, 401, 403, 404,
+405 as UP. It MUST treat status 3xx as UP-with-warning (redirect from
+an RTSP server still proves liveness). It MUST treat status 5xx as
+UP-with-warning. It MUST require the leading `RTSP/` prefix on the
+response.
 - **Source:** Brief: *"with variance allowed for known quirks of some
   very popular vendors."*
 - **Acceptance:** unit fixtures for Hikvision-401, Dahua-401-with-spaces,
-  and a generic-5xx all produce the expected status.
+  a generic-3xx, and a generic-5xx all produce the expected status
+  and message.
 
 #### FR-013 — Enhanced mode behaviour
 **Must.** **REQUIRED-BY-BRIEF.**
@@ -79,9 +82,9 @@ explicitly test for the frozen-frame condition.
 
 #### FR-014 — Black/uniform frame rejection
 **Should.** **PROPOSED.**
-Enhanced mode SHOULD reject frames whose mean luminance is below 5/255
-*and* standard deviation is below 2/255 across a 32×32 greyscale
-downsample of the last frame.
+Enhanced mode SHOULD reject frames whose mean luminance is below 5
+*and* standard deviation is below 2 (on a 0–255 raw scale) across a
+32×32 greyscale downsample of the last frame.
 - **Source:** Enhances FR-013 to also catch sensor-fault / lens-cap.
 - **Acceptance:** a fixture that emits 5 different solid-black frames
   produces DOWN with `"black or uniform"`.
@@ -91,15 +94,20 @@ downsample of the last frame.
 Full mode MUST capture exactly one frame and compare it (via the
 fingerprinting strategy in
 **[05-image-comparison-strategy.md](./05-image-comparison-strategy.md)**)
-against user-supplied reference image(s).
+against user-supplied reference image(s). If frame capture fails
+(connection refused, timeout, or decode error), Full mode produces DOWN
+with the capture-failure reason. Full mode does NOT run Enhanced's
+multi-frame frozen/black-frame heuristics; the fingerprint comparison
+is the sole pass/fail signal.
 - **Source:** Brief.
 - **Acceptance:** a fixture frame within Hamming distance ≤ threshold of
   the reference produces UP; outside it produces DOWN.
 
-#### FR-016 — Full mode does NOT run Enhanced first
+#### FR-016 — Full mode does NOT run Enhanced heuristics
 **Should.** **PROPOSED.**
-Full mode SHALL skip Enhanced's frozen/black checks. The image-match
-result is the sole pass/fail signal in Full mode.
+Full mode SHALL skip Enhanced's multi-frame frozen-frame detection and
+multi-frame black/uniform detection. The fingerprint comparison result
+is the sole pass/fail signal once a single frame is captured.
 - **Source:** Brief: *"skips monitoring using Enhanced methods and skips
   straight to image match verification."*
 - **Acceptance:** a fixture that returns one valid frame matching the
@@ -198,12 +206,14 @@ The monitor MUST support both Basic and Digest authentication for RTSP.
 For Basic mode, an authentication challenge (401 with
 `WWW-Authenticate`) counts as UP without retrying with credentials. For
 Enhanced/Full, the credentials (if supplied) MUST be passed to the
-underlying decode stack (FFmpeg URL or `node-av` options).
+underlying decode stack (`node-av` AVDictionary options).
 - **Source:** Vendor quirk research; HTTP-monitor parity.
 - **Acceptance:** unit tests cover (a) anonymous OPTIONS → 401 → UP for
   Basic; (b) credentialed OPTIONS → 200 → UP for Basic; (c) Enhanced
-  with credentials embedded in URL and credentials passed via separate
-  fields both succeed.
+  with credentials supplied via the form fields succeeds. If both URL
+  credentials (`rtsp://user:pass@host/path`) and form credentials are
+  set simultaneously, the form fields win and a non-blocking UI warning
+  is shown — validated by a unit test and a UI smoke test.
 
 #### FR-031 — Reuse generic credential columns
 **Must.** **PROPOSED.**
@@ -241,8 +251,12 @@ existing Uptime Kuma monitor types in style and structure. The Vue
 template MUST follow the same `v-if="monitor.type === '...'"` pattern
 used throughout `EditMonitor.vue`.
 - **Source:** Brief.
-- **Acceptance:** visual diff against an HTTP-keyword monitor edit page
-  shows only field-level differences, no structural divergence.
+- **Acceptance:** (a) the new monitor section uses the same Bootstrap
+  grid classes and field-group structure visible in the HTTP-keyword
+  section of `EditMonitor.vue`; (b) no custom CSS is introduced — only
+  Uptime Kuma's existing utility classes; (c) every field that carries
+  a tooltip uses the same `question-icon`/`<font-awesome>` pattern
+  visible in the existing monitor fields.
 
 #### UI-002 — Help text on every non-obvious field
 **Must.** **PROPOSED.**
@@ -429,12 +443,21 @@ or `"Path"` MUST NOT be added.
 draft of OP-001 / OP-002 about FFmpeg subprocess detection).
 The implementation MUST use `node-av` (`seydx/node-av`) as the in-process
 decode stack. No system FFmpeg detection, no PATH search, no subprocess
-spawn. `node-av`'s prebuilt binaries cover the platforms Uptime Kuma
-ships to.
+spawn. `node-av` ships prebuilt binaries via npm optional-deps for
+Linux x64/arm64, macOS x64/arm64, and Windows x64/arm64.
+
+**Platform gap — arm/v7 and musl:** `node-av` does NOT currently ship
+prebuilds for `linux/arm/v7` (armv7l) or musl (Alpine). Uptime Kuma's
+official Docker builds include `linux/arm/v7`. On platforms where no
+prebuild is available and source-build also fails, the monitor MUST
+degrade gracefully per UI-005: Enhanced and Full modes are unavailable
+but Basic mode still works (it does not use `node-av`). See OP-002 for
+the `FrameSource` interface that makes this substitution localised.
 - **Source:** User decision on Q3, aligning with `@louislam`'s recommendation
   on PR #5822.
 - **Acceptance:** `package.json` adds `node-av` as a dependency; no
-  `child_process.spawn("ffmpeg")` exists in the new code.
+  `child_process.spawn("ffmpeg")` exists in the new code; simulated
+  `node-av` load failure leaves Basic mode functional.
 
 #### OP-002 — Implementation factored behind a `FrameSource` interface
 **Should.** **PROPOSED.**
@@ -507,13 +530,43 @@ cron.
 
 #### OP-006 — URL-reference fetch hardening
 **Must.** **PROPOSED.**
-URL-sourced references MUST be: (a) fetched only over HTTP/HTTPS, (b)
-SSRF-guarded against RFC 1918 / loopback / link-local addresses *unless*
-the monitor's host itself targets such a range, (c) capped at 10 MB
-download, (d) re-validated and re-resampled before fingerprinting.
+URL-sourced references MUST be fetched with the following safeguards:
+
+(a) **Protocol:** HTTP/HTTPS only.
+
+(b) **SSRF — IP blocklist:** reject resolved IPs in RFC 1918 ranges
+(10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), loopback (127.0.0.0/8,
+::1), and link-local ranges (169.254.0.0/16, fe80::/10) UNLESS the
+monitor's own target host resolves to an address in the same /8 subnet
+(i.e., the monitored camera is demonstrably on a private network). The
+subnet comparison MUST use the resolved IP, not the hostname, to prevent
+DNS rebinding: the IP is resolved once, checked against the blocklist,
+and then used directly for the connection (no second resolution).
+
+(c) **No redirects:** the fetch MUST NOT follow HTTP redirects. A
+redirect response is treated as an error. This prevents redirect-based
+SSRF bypasses.
+
+(d) **Content-type enforcement:** the `Content-Type` response header
+MUST begin with `image/` before the response body is consumed. If the
+content type does not match, the connection is closed without reading
+the body.
+
+(e) **Download cap:** the response body is capped at 10 MB. The cap is
+enforced *during streaming* (bytes-received counter, abort on exceed),
+not as a post-download check.
+
+(f) **Re-validation:** the fetched bytes are re-decoded and re-encoded
+by `sharp` before fingerprinting and storage, sanitising any
+adversarial or malformed content.
 - **Source:** Defensive design; standard SSRF protection.
-- **Acceptance:** a URL pointing to `http://169.254.169.254/...` is
-  rejected unless the monitored RTSP host is also link-local.
+- **Acceptance:** (i) a URL pointing to `http://169.254.169.254/...`
+  (AWS metadata) is rejected; (ii) `http://127.0.0.1/secret` is
+  rejected; (iii) `http://192.168.1.100/cam.jpg` is rejected unless
+  the monitor target is also in 192.168.1.0/24; (iv) a URL that
+  redirects to an otherwise-allowed image is rejected; (v) a URL
+  with `Content-Type: text/html` is rejected before body bytes are
+  read; (vi) a URL serving a >10 MB body is aborted mid-stream.
 
 ---
 
@@ -551,12 +604,17 @@ including the libav decoder state held by `node-av`.
 **Must.** **PROPOSED.** Resolves Q9.
 The number of concurrently-active Enhanced/Full mode checks across all
 monitors MUST be capped at `max(2, min(4, floor(os.cpus().length / 2)))`
-by default, with a `RTSP_CONCURRENCY` env var override. Excess checks
-queue with a sane wait-then-skip policy.
+by default, with a `RTSP_CONCURRENCY` env var override. If a check
+cannot acquire a concurrency token within its configured timeout, the
+check is **skipped** (no heartbeat is written; the event is logged at
+warn level). This prevents false DOWN alerts from transient resource
+saturation.
 - **Source:** Resource hygiene; user decision on Q9.
-- **Acceptance:** test runs 20 monitors concurrently on a 2-core
+- **Acceptance:** (a) test runs 20 monitors concurrently on a 2-core
   machine, observes never more than 2 active decode sessions at once;
-  on an 8-core machine, never more than 4.
+  (b) on an 8-core machine, never more than 4; (c) a check that cannot
+  acquire a token within timeout produces no heartbeat and a log line
+  matching `"RTSP check skipped: concurrency limit"`.
 
 #### NFR-005 — Reference-fingerprint reuse
 **Must.** Implements OP-005 above.
@@ -567,14 +625,17 @@ queue with a sane wait-then-skip policy.
 #### NFR-010 — Graceful degradation
 **Must.** **REQUIRED-BY-BRIEF (interpretation of "virtually impossible to
 fail").**
-Every plausible failure mode MUST be caught and reported as a
-heartbeat with a precise message. The check function MUST NOT throw
-unhandled exceptions. The monitor type MUST NOT crash the server
-process.
+Every plausible failure mode MUST be caught and reported as a DOWN
+heartbeat with a precise message. The check function MUST follow
+Uptime Kuma's established monitor-type pattern: **throw a descriptive
+`Error` on failure**; the server infrastructure in
+`server/model/monitor.js` catches the throw and converts it to a DOWN
+heartbeat. The monitor type MUST NOT crash the server process.
 - **Acceptance:** fault-injection test (DNS failure, connection
-  refused, RST mid-handshake, FFmpeg crash, FFmpeg timeout, malformed
+  refused, RST mid-handshake, node-av crash, timeout, malformed
   reference image, missing reference image, oversized reference, etc.)
-  produces a deterministic DOWN with a unique message for each case.
+  produces a deterministic thrown Error with a unique message for each
+  case, which the test harness catches and verifies maps to a DOWN.
 
 #### NFR-011 — No silent failures
 **Must.** **PROPOSED.**
@@ -654,7 +715,7 @@ At minimum, the test suite covers:
 - **Protocol coverage:** protocol-success for RTSP, RTSPS, RTMP, RTMPS
   each; connection-failure; timeout; malformed-response;
   vendor-quirk-401 (Hikvision); Dahua-spaced-realm; non-RTSP-on-port
-  (HTTP-on-554); 5xx-with-warning.
+  (HTTP-on-554); 3xx-with-warning; 5xx-with-warning.
 - **Mode behaviour:** Basic-pass (each protocol); Enhanced-pass;
   Enhanced-frozen-frame; Enhanced-black-frame; Enhanced-only-1-of-5;
   Enhanced-zero-frames; Full-pass-Day; Full-pass-Night;
@@ -662,7 +723,7 @@ At minimum, the test suite covers:
   short-circuit.
 - **Validation:** missing-reference-rejected (FR-019b);
   URL-with-rtsp-transport-warns (UI-007); URL-credentials-and-form-
-  credentials-conflict-warns; reference-resampled-on-upload (UI-004);
+  credentials-both-set-shows-warning-and-form-wins; reference-resampled-on-upload (UI-004);
   reference-EXIF-stripped (NFR-023).
 - **Security:** credential-redaction-in-logs (NFR-020);
   credential-redaction-in-heartbeat (NFR-020); SSRF-rejection-link-local
@@ -715,9 +776,12 @@ column drops). They MUST be named per the existing
 
 #### NFR-034 — Minimal new dependencies
 **Must.** **REQUIRED-BY-BRIEF.**
-The implementation MUST add exactly two production dependencies:
-(a) `sharp` (image processing), (b) `node-av` (in-process FFmpeg
-bindings). No other new top-level dependencies.
+The implementation MUST add exactly two new **direct (top-level)
+production** dependencies: (a) `sharp` (image processing),
+(b) `node-av` (in-process FFmpeg bindings). Transitive dependencies
+pulled in by these two packages are expected and acceptable; the
+"exactly two" constraint applies only to direct `dependencies` entries
+in `package.json`.
 - **Acceptance:** `git diff package.json` shows exactly 2 new entries
   in `dependencies`, none in `devDependencies` beyond test fixtures.
 
@@ -740,13 +804,25 @@ can build alert rules around them. Documented patterns:
 - **Acceptance:** the test suite lists each pattern as an expected
   message format.
 
-#### NFR-041 — Verbose-mode debug capture
+#### NFR-041 — Debug capture via existing `save_response` infrastructure
 **Should.** **PROPOSED.**
-A per-monitor "verbose" debug toggle SHOULD store the last raw
-response (Basic) or last frame summary (Enhanced/Full) in the
-`response` column for the most recent heartbeat only. Capped at 4 KB.
-- **Acceptance:** toggle on, last heartbeat includes structured
-  debug; toggle off, column is NULL.
+The RTSP monitor type MUST integrate with Uptime Kuma's existing
+per-monitor `save_response` / `save_error_response` /
+`response_max_length` columns on the `monitor` table. When
+`save_response` is enabled, the `heartbeat.response` column is
+populated with a structured debug summary:
+
+- **Basic:** first 256 bytes of the raw RTSP response.
+- **Enhanced:** per-frame summary (size in bytes, dimensions, xxHash).
+- **Full:** per-frame summary + 128-bit fingerprint hex + threshold and
+  Hamming distance.
+
+This MUST NOT introduce a new "verbose" toggle or column. The existing
+`response_max_length` cap (default 10,000 bytes) applies. When
+`save_response` is off (the default), `heartbeat.response` is `NULL`.
+- **Acceptance:** toggle `save_response = 1`, run a check, verify
+  `heartbeat.response` contains structured JSON matching the above;
+  toggle `save_response = 0`, verify `heartbeat.response` is NULL.
 
 ### B.6 Process / governance
 

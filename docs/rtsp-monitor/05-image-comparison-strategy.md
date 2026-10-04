@@ -88,22 +88,23 @@ from each image, designed to be tolerant of the artefacts we expect.
 JPEG buffer
   ↓ sharp().greyscale()              # collapse colour, also bridges IR/visible
   ↓ .normalise()                     # equalise dynamic range; reduces day/night gap
-  ↓ .resize(33, 32)                  # 33×32 because dHash needs N+1 cols for diffs
-  ↓ .raw().toBuffer()                # 1056 bytes of luminance
-fingerprint = dHash(buffer, 33, 32)
+  ↓ .resize(9, 8)                    # 9×8 because dHash needs N+1 cols for diffs: (9-1)×8 = 64 bits
+  ↓ .raw().toBuffer()                # 72 bytes of luminance
+fingerprint = dHash(buffer, 9, 8)
 ```
 
-This gives a 64-bit dHash (1024 comparisons of horizontal-neighbour
-luminance differences). To improve day/night robustness, we *also*
-compute a 64-bit hash on a Sobel-edge variant:
+This gives a 64-bit dHash (64 comparisons of horizontal-neighbour
+luminance differences; each row of 9 pixels yields 8 left-right
+gradient bits, across 8 rows = 8 × 8 = 64 bits). To improve day/night
+robustness, we *also* compute a 64-bit hash on a Sobel-edge variant:
 
 ```
 JPEG buffer
-  ↓ sharp().greyscale().normalise().resize(34, 33)
+  ↓ sharp().greyscale().normalise().resize(34, 33)   # larger for Sobel input quality
   ↓ apply 3×3 Sobel kernel via .convolve({width:3,height:3,kernel:[…]})
-  ↓ .resize(33, 32)
-  ↓ .raw().toBuffer()
-edge-hash = dHash(buffer, 33, 32)
+  ↓ .resize(9, 8)                    # reduce to hash-input size: (9-1)×8 = 64 bits
+  ↓ .raw().toBuffer()                # 72 bytes of edge luminance
+edge-hash = dHash(buffer, 9, 8)
 ```
 
 The combined fingerprint is the concatenation: 64 luminance dHash bits +
@@ -124,8 +125,8 @@ Why include the edge variant:
 - Edges (a doorframe, the silhouette of a fence) survive the
   day-night brightness change far better than absolute luminance.
 - A pure-luminance hash on a Day reference compared to a Night live
-  frame typically gives Hamming distance 30–45 of 64 — too much.
-- An edge hash on the same pair typically gives 8–18 of 64 — well
+  frame typically gives Hamming distance 30–45 of 64 bits — too much.
+- An edge hash on the same pair typically gives 8–18 of 64 bits — well
   inside the threshold.
 
 ### Why not SSIM
@@ -142,20 +143,26 @@ fingerprints. We compute distance on the luminance and edge halves
 separately:
 
 ```
-distance(live, ref) = hamming(live.lumHash, ref.lumHash)
-                    + hamming(live.edgeHash, ref.edgeHash)   // 0..128 total
+distance(live, ref) = hamming(live.lumHash, ref.lumHash)   // 0..64
+                    + hamming(live.edgeHash, ref.edgeHash)  // 0..64
+                    // total range: 0..128
 ```
 
 A pre-flight luminance check catches the easy "covered lens / black
-frame" cases before the full distance is computed:
+frame" cases and reflects them as maximum Hamming distance rather than
+a separate abort. These are part of the comparison algorithm — Full
+mode does not short-circuit to DOWN independently of the fingerprint
+comparison:
 
 ```
 if (mean(liveGrey) < 5  &&  ref is Day)   → score = 128 (max distance)
 if (mean(liveGrey) > 240 && ref is Night) → score = 128
 ```
 
-These short-circuits prevent a black live frame from spuriously matching
-a black-uniform reference.
+Setting the score to the maximum (128) means the threshold test will
+then produce DOWN naturally. This avoids a hidden separate detection
+path while still ensuring extreme-luminance edge cases don't
+spuriously pass.
 
 ## 3. Day/Night logic
 
@@ -233,8 +240,10 @@ monitor.rtsp_reference_threshold   INTEGER  -- default 24
 monitor.rtsp_reference_separate    INTEGER  -- 0/1, default 1
 ```
 
-Constraints (enforced in `Monitor.toJSON()` validation, not at SQL level
-since SQLite check constraints are awkward to migrate):
+Constraints (enforced at the **reference-upload endpoint**, not at SQL
+level or in `Monitor.toJSON()` — serialisation is the wrong layer for
+upload validation; `toJSON()` merely excludes BLOB columns for payload
+hygiene):
 
 - For each slot, exactly one of `_blob` and `_url` is non-null.
 - BLOB column capped at 256 KB (well above the 80 KB target after
@@ -287,13 +296,16 @@ WebSocket payload hygiene.
 
 ```
 1. Preflight (DNS, URL parse, TLS setup, concurrency token).
-2. Capture one frame: FFmpeg / node-av → JPEG buffer (in memory).
+2. Capture one frame: node-av → JPEG buffer (in memory).
 3. Validate JPEG magic bytes; reject if malformed.
-4. Decode → greyscale → normalise → resize 33×32 raw → compute
-   luminance dHash.
-5. Same buffer → Sobel-convolve → resize 33×32 raw → compute edge dHash.
+4. Decode → greyscale → normalise → resize 9×8 raw → compute
+   luminance dHash (64 bits).
+5. Sobel-convolve (at larger intermediate size) → resize 9×8 raw →
+   compute edge dHash (64 bits).
 6. Concatenate → 128-bit live fingerprint.
-7. Pre-flight extreme-luminance check (cf §2 short-circuits).
+7. Extreme-luminance adjustment: if live frame mean < 5 and ref is Day,
+   or mean > 240 and ref is Night, set distance to 128 (max) rather
+   than computing fingerprint distance.
 8. Hamming-compare against cached Day fingerprint and (if present)
    Night fingerprint. Take min.
 9. UP if min distance ≤ threshold; DOWN otherwise. Heartbeat message
@@ -311,9 +323,9 @@ Node: ~5 MB above baseline for a 1080p source.
 |---|---|
 | Camera bumped 5 degrees | Combined dHash distance typically 10–20 → still passes default threshold; if the bump is severe enough to fail, the alert is correct. |
 | Lens fogged | Edge hash distance balloons; luminance hash mostly unchanged → combined distance 30–60 → DOWN. Correct. |
-| IR illuminator died at night | Live frame is uniformly black → luminance pre-flight short-circuit → DOWN. Correct. |
+| IR illuminator died at night | Live frame is uniformly black → luminance adjustment sets distance to 128 → exceeds threshold → DOWN. The result flows through the normal fingerprint-comparison path; there is no separate abort. Correct. |
 | Day reference uploaded while it's night-time and "Separate" toggle is off | Only one reference; live frame compared to it; distance high → DOWN. **This is the user-error case the day/night feature exists to prevent.** UI nudges: when the user uploads a single reference, the form should suggest enabling Separate Day/Night with a note. **PROPOSED.** |
-| Camera stream resolution differs across day/night (some cameras downshift) | Both fingerprints are taken at 33×32 — resolution-invariant. No issue. |
+| Camera stream resolution differs across day/night (some cameras downshift) | Both fingerprints are taken at 9×8 — resolution-invariant. No issue. |
 | Camera adds a timestamp overlay | Localised to ~5% of the image; dHash is dominated by the bulk of the scene; distance contribution typically < 5 bits. No issue. |
 | Camera adds a moving timestamp / weather overlay that changes every check | Distance contribution can be up to ~10 bits; default threshold 24 absorbs this. If borderline, user can raise threshold. |
 | Reference upload is a corrupt JPEG | `sharp` re-decode fails → upload rejected with explicit error. No bad reference reaches storage. |

@@ -636,4 +636,49 @@ async function isMonitorPublic(monitorID) {
     return !!publicMonitor;
 }
 
+/**
+ * UI-013: serve the last-match thumbnail for a stream monitor on a
+ * public status page. Three gates apply:
+ *   1. The monitor must be type=rtsp.
+ *   2. The monitor must have opted in via `stream_status_thumbnail=1`.
+ *   3. The monitor must be linked to at least one public status-page group.
+ * Returns 404 otherwise (no leak of monitor existence/state).
+ *
+ * Pattern follows /api/badge/:id endpoints: short cache, no auth.
+ */
+router.get("/api/monitor/:id/match-thumbnail", cache("30 seconds"), async (request, response) => {
+    allowAllOrigin(response);
+    try {
+        const monitorID = parseInt(request.params.id, 10);
+        if (!Number.isFinite(monitorID)) {
+            response.status(404).end();
+            return;
+        }
+        const monitor = await R.findOne("monitor", " id = ? ", [monitorID]);
+        if (
+            !monitor ||
+            monitor.type !== "rtsp" ||
+            !monitor.stream_status_thumbnail ||
+            !(await isMonitorPublic(monitorID))
+        ) {
+            response.status(404).end();
+            return;
+        }
+        const row = await R.getRow(
+            "SELECT image_blob FROM monitor_stream_down_image WHERE monitor_id = ? AND kind = 'match' ORDER BY captured_at DESC LIMIT 1",
+            [monitorID]
+        );
+        if (!row || !row.image_blob) {
+            response.status(404).end();
+            return;
+        }
+        const buf = Buffer.isBuffer(row.image_blob) ? row.image_blob : Buffer.from(row.image_blob);
+        response.set("Content-Type", "image/jpeg");
+        response.set("Cache-Control", "public, max-age=60");
+        response.send(buf);
+    } catch (error) {
+        sendHttpError(response, error.message);
+    }
+});
+
 module.exports = router;

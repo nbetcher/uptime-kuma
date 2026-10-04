@@ -20,7 +20,7 @@ async function* walk(dir) {
     }
 }
 
-const UPSTREAM_EN_JSON = "https://raw.githubusercontent.com/louislam/uptime-kuma/refs/heads/master/src/lang/en.json";
+const UPSTREAM_EN_JSON = "https://raw.githubusercontent.com/nbetcher/uptime-kuma/refs/heads/master/src/lang/en.json";
 
 /**
  * Extract `{placeholders}` from a translation string.

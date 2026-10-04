@@ -191,6 +191,7 @@ const { resetChrome } = require("./monitor-types/real-browser-monitor-type");
 const { EmbeddedMariaDB } = require("./embedded-mariadb");
 const { SetupDatabase } = require("./setup-database");
 const { chartSocketHandler } = require("./socket-handlers/chart-socket-handler");
+const { rtspSocketHandler } = require("./socket-handlers/rtsp-socket-handler");
 
 app.use(express.json());
 
@@ -730,6 +731,14 @@ let needSetup = false;
                 let notificationIDList = monitor.notificationIDList;
                 delete monitor.notificationIDList;
 
+                // Stream-monitor (RTSP/RTMP) validation — runs before
+                // bean.import so a Full-mode save without references
+                // is rejected cleanly.
+                if (monitor.type === "rtsp") {
+                    const { validateStreamMonitor } = require("./monitor-types/rtsp/validation");
+                    validateStreamMonitor(monitor, null);
+                }
+
                 // Ensure status code ranges are strings
                 if (!monitor.accepted_statuscodes.every((code) => typeof code === "string")) {
                     throw new Error("Accepted status codes are not all strings");
@@ -752,6 +761,18 @@ let needSetup = false;
                     "humanReadableInterval",
                     "globalpingdnsresolvetypeoptions",
                     "responsecheck",
+                    // RTSP reference columns are server-authoritative —
+                    // the dedicated upload socket handlers are the only
+                    // legitimate writers. Stripping the form copies on
+                    // add prevents the frontend from echoing a hex
+                    // string into a binary column, or clobbering a
+                    // stale value on a clone/duplicate flow.
+                    "streamReferenceDayHasBlob",
+                    "streamReferenceNightHasBlob",
+                    "streamReferenceDayHash",
+                    "streamReferenceNightHash",
+                    "streamReferenceDayUrl",
+                    "streamReferenceNightUrl",
                 ];
                 for (const prop of frontendOnlyProperties) {
                     if (prop in monitor) {
@@ -765,6 +786,15 @@ let needSetup = false;
                     bean.retry_only_on_status_code_failure = monitor.retryOnlyOnStatusCodeFailure;
                 }
                 bean.user_id = socket.userID;
+
+                // Apply stream-monitor (RTSP/RTMP) fields with the
+                // boolean-coercion + null-defaulting rules that
+                // editMonitor also uses, so add/edit produce
+                // identical DB state.
+                if (monitor.type === "rtsp") {
+                    const { applyStreamFieldsToBean } = require("./monitor-types/rtsp/validation");
+                    applyStreamFieldsToBean(bean, monitor);
+                }
 
                 bean.validate();
 
@@ -936,6 +966,18 @@ let needSetup = false;
                 bean.ping_numeric = monitor.ping_numeric;
                 bean.ping_count = monitor.ping_count;
                 bean.ping_per_request_timeout = monitor.ping_per_request_timeout;
+
+                // Stream-monitor (RTSP/RTMP) configuration. BLOB
+                // reference columns are managed by the dedicated
+                // socket handlers, not by editMonitor.
+                if (monitor.type === "rtsp") {
+                    const {
+                        applyStreamFieldsToBean,
+                        validateStreamMonitor,
+                    } = require("./monitor-types/rtsp/validation");
+                    applyStreamFieldsToBean(bean, monitor);
+                    validateStreamMonitor(monitor, bean);
+                }
 
                 bean.validate();
 
@@ -1716,6 +1758,7 @@ let needSetup = false;
         remoteBrowserSocketHandler(socket);
         generalSocketHandler(socket, server);
         chartSocketHandler(socket);
+        rtspSocketHandler(socket);
 
         log.debug("server", "added all socket handlers");
 

@@ -12,8 +12,9 @@ that affect the protocol surface are listed in §4.
 | RTSP | TCP | RTP over TCP-interleaved | 554 | **Yes — Enhanced, Full** | RFC 2326 §10.12; works through firewalls. UI label: "RTSP/TCP" |
 | RTSP | TCP | RTP over UDP | 554 (control), dynamic UDP (media) | **Yes — Enhanced, Full** | UI label: "RTSP/UDP" with a `?` tooltip clarifying that this means RTSP control over TCP and RTP media over UDP — see UI-008 in [04-requirements.md](./04-requirements.md) |
 | RTSP | UDP | n/a | 554 | **No** | IANA-reserved but virtually unused; see §3.1 |
-| RTSPS | TLS over TCP | RTP over TCP-interleaved | 322 | **Yes — Basic, Enhanced, Full** | RFC 7826 §4.2 |
-| RTSPS | TLS over TCP | RTP over UDP | 322 (control), dynamic UDP (media) | **Yes — Basic, Enhanced, Full** | Control encrypted; media is plain RTP unless SRTP-keyed (rare) |
+| RTSPS | TLS over TCP | n/a (Basic only) | 322 | **Yes — Basic** | TLS/TCP handshake + OPTIONS. Basic verifies the TLS connection and RTSP response only; it does NOT negotiate media transport. |
+| RTSPS | TLS over TCP | RTP over TCP-interleaved | 322 | **Yes — Enhanced, Full** | RFC 7826 §4.2 |
+| RTSPS | TLS over TCP | RTP over UDP | 322 (control), dynamic UDP (media) | **Yes — Enhanced, Full** | Control encrypted; media is plain RTP unless SRTP-keyed (rare). Basic does not exercise this path. |
 | RTMP | TCP | (in-band) | 1935 | **Yes — Basic, Enhanced, Full** | C0/C1 handshake at minimum |
 | RTMPS | TLS over TCP | (in-band) | 443 or 4935 | **Yes — Basic, Enhanced, Full** | TLS-then-RTMP |
 | RTMP | UDP | n/a | n/a | **No** | Does not exist; see §3.3 |
@@ -28,7 +29,7 @@ protocols documentation, and current Axis/MediaMTX/NGINX-RTMP server docs.
 | | Basic | Enhanced | Full |
 |---|---|---|---|
 | RTSP/TCP | Yes | Yes | Yes |
-| RTSPS (TLS over TCP) | Yes | Yes | Yes |
+| RTSPS (TLS over TCP) | Yes *(handshake only; media transport not exercised)* | Yes | Yes |
 | RTMP/TCP | Yes | Yes | Yes |
 | RTMPS (TLS over TCP) | Yes | Yes | Yes |
 
@@ -107,11 +108,12 @@ User-Agent: UptimeKuma/2.x\r\n
 ```
 
 A "speaking RTSP" response is any line beginning with `RTSP/`, with a
-matching `CSeq:` echoed back. Status codes 200, 401 (auth required), 404
-(path wrong but server alive), and 405 (method not allowed but server
-alive) all prove liveness. Status codes 5xx are ambiguous — we report UP
-because a 5xx still came from an RTSP-speaking process, with a warning
-message indicating server-side error.
+matching `CSeq:` echoed back. Status codes 200, 401 (auth required), 403
+(forbidden but server alive), 404 (path wrong but server alive), and 405
+(method not allowed but server alive) all prove liveness. Status codes 3xx
+(redirect) prove the server is alive and speaking RTSP — reported as UP
+with a warning. Status codes 5xx are ambiguous — reported as UP with a
+warning because a 5xx still came from an RTSP-speaking process.
 
 ### Minimal RTMP handshake
 

@@ -104,6 +104,14 @@ class Monitor extends BeanModel {
             obj.validCert = validCert;
         }
 
+        // UI-013: expose whether this RTSP monitor has opted in to
+        // showing its last-match thumbnail on the public status page,
+        // so the SPA knows to render the <img>. The image bytes are
+        // served by /api/monitor/:id/match-thumbnail.
+        if (this.type === "rtsp" && this.stream_status_thumbnail) {
+            obj.streamStatusThumbnail = true;
+        }
+
         return obj;
     }
 
@@ -213,11 +221,45 @@ class Monitor extends BeanModel {
             saveResponse: this.getSaveResponse(),
             saveErrorResponse: this.getSaveErrorResponse(),
             responseMaxLength: this.response_max_length ?? RESPONSE_BODY_LENGTH_DEFAULT,
+
+            // Stream-monitor (RTSP / RTMP) configuration. BLOBs are
+            // excluded — fetched lazily via socket per HLDS UI-012.
+            // Reference URLs / hashes are sensitive (can leak internal
+            // hostnames) and move into the includeSensitiveData block
+            // below.
+            streamProtocol: this.stream_protocol,
+            streamTransport: this.stream_transport,
+            streamMode: this.stream_mode,
+            streamFrameCount: this.stream_frame_count,
+            streamWallClockBudgetSec: this.stream_wall_clock_budget_sec,
+            streamMatchThreshold: this.stream_match_threshold,
+            streamSeparateDayNight: this.stream_separate_day_night === null || this.stream_separate_day_night === undefined
+                ? null
+                : Boolean(this.stream_separate_day_night),
+            streamStatusThumbnail: this.stream_status_thumbnail === null || this.stream_status_thumbnail === undefined
+                ? null
+                : Boolean(this.stream_status_thumbnail),
+            streamKeepDownImages: this.stream_keep_down_images === null || this.stream_keep_down_images === undefined
+                ? null
+                : Boolean(this.stream_keep_down_images),
+            streamReferenceDayHasBlob: Boolean(this.stream_reference_day_blob),
+            streamReferenceNightHasBlob: Boolean(this.stream_reference_night_blob),
         };
 
         if (includeSensitiveData) {
             data = {
                 ...data,
+                // Stream-monitor reference metadata: URLs may disclose
+                // internal hostnames, fingerprints are not secrets in
+                // themselves but only meaningful to the operator.
+                streamReferenceDayUrl: this.stream_reference_day_url,
+                streamReferenceNightUrl: this.stream_reference_night_url,
+                streamReferenceDayHash: this.stream_reference_day_hash
+                    ? Buffer.from(this.stream_reference_day_hash).toString("hex")
+                    : null,
+                streamReferenceNightHash: this.stream_reference_night_hash
+                    ? Buffer.from(this.stream_reference_night_hash).toString("hex")
+                    : null,
                 headers: this.headers,
                 body: this.body,
                 grpcBody: this.grpcBody,
@@ -435,6 +477,11 @@ class Monitor extends BeanModel {
             // Expose here for prometheus update
             // undefined if not https
             let tlsInfo = undefined;
+
+            // SkipCheckError sets this to true and we bypass the
+            // heartbeat persistence + frontend emit + uptime-calc
+            // update, jumping straight to scheduling the next beat.
+            let skipBeat = false;
 
             if (!previousBeat || this.type === "push") {
                 previousBeat = await R.findOne("heartbeat", " monitor_id = ? ORDER BY time DESC", [this.id]);
@@ -947,7 +994,20 @@ class Monitor extends BeanModel {
 
                 retries = 0;
             } catch (error) {
-                if (error?.name === "CanceledError") {
+                // SkipCheckError: do not persist a heartbeat — caller
+                // (e.g. RTSP concurrency-bucket saturation per
+                // NFR-004) wants this beat dropped, not reported as
+                // DOWN. We log, restore the previous status, and
+                // jump to the bottom of the loop to schedule the
+                // next beat.
+                if (error?.name === "SkipCheckError") {
+                    log.warn("monitor", `[${this.name}] check skipped: ${error.message}`);
+                    skipBeat = true;
+                    if (previousBeat) {
+                        bean.status = previousBeat.status;
+                        bean.msg = `skipped: ${error.message}`;
+                    }
+                } else if (error?.name === "CanceledError") {
                     bean.msg = `timeout by AbortSignal (${this.timeout}s)`;
                 } else {
                     bean.msg = error.message;
@@ -991,6 +1051,18 @@ class Monitor extends BeanModel {
             }
 
             bean.retries = retries;
+
+            // SkipCheckError fast-path: drop the beat, reschedule.
+            // We don't write a heartbeat row, don't emit to clients,
+            // don't update uptime/prometheus, and don't run
+            // notifications. This is the "skip" semantics required by
+            // NFR-004 acceptance criterion (c).
+            if (skipBeat) {
+                if (!this.isStop) {
+                    this.heartbeatInterval = setTimeout(safeBeat, beatInterval * 1000);
+                }
+                return;
+            }
 
             log.debug("monitor", `[${this.name}] Check isImportant`);
             let isImportant = Monitor.isImportantBeat(isFirstBeat, previousBeat?.status, bean.status);

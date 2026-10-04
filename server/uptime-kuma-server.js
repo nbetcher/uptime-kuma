@@ -132,6 +132,7 @@ class UptimeKumaServer {
         UptimeKumaServer.monitorTypeList["sqlserver"] = new MssqlMonitorType();
         UptimeKumaServer.monitorTypeList["mysql"] = new MysqlMonitorType();
         UptimeKumaServer.monitorTypeList["oracledb"] = new OracleDbMonitorType();
+        UptimeKumaServer.monitorTypeList["rtsp"] = new RtspMonitorType();
 
         // Allow all CORS origins (polling) in development
         let cors = undefined;
@@ -143,6 +144,12 @@ class UptimeKumaServer {
 
         this.io = new Server(this.httpServer, {
             cors,
+            // Bump the per-message cap from socket.io's 1 MB default so
+            // the RTSP reference-upload path can ship a 10 MB binary
+            // (≈14 MB after base64 + JSON framing). All other handlers
+            // are tiny; raising the cap globally is the lowest-impact
+            // way to support the upload without chunking.
+            maxHttpBufferSize: 16 * 1024 * 1024,
             allowRequest: async (req, callback) => {
                 let transport;
                 // It should be always true, but just in case, because this property is not documented
@@ -584,4 +591,5 @@ const { SystemServiceMonitorType } = require("./monitor-types/system-service");
 const { MssqlMonitorType } = require("./monitor-types/mssql");
 const { MysqlMonitorType } = require("./monitor-types/mysql");
 const { OracleDbMonitorType } = require("./monitor-types/oracledb");
+const { RtspMonitorType } = require("./monitor-types/rtsp");
 const Monitor = require("./model/monitor");

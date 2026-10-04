@@ -11,14 +11,14 @@ on: # zizmor: ignore[dangerous-triggers]
       - master
   pull_request_target:
     branches:
-      - master
+      - rtsp-monitor
     types: [synchronize]
 
 jobs:
   label:
     name: Labeling
     runs-on: ubuntu-latest
-    if: ${{ github.repository == 'louislam/uptime-kuma' }}
+    if: ${{ github.repository == 'nbetcher/uptime-kuma' }}
     permissions:
       contents: read
       pull-requests: write

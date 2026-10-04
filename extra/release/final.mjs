@@ -34,8 +34,9 @@ checkVersionFormat(version);
 // Check if the semver identifier is empty
 const semverIdentifier = semver.prerelease(version);
 console.log("Semver identifier:", semverIdentifier);
-if (semverIdentifier) {
-    console.error("VERSION should not have a semver identifier for final release");
+// The only allowed identifier is this fork's "-rtsp" suffix (e.g. 2.5.5-rtsp)
+if (semverIdentifier && !(semverIdentifier.length === 1 && semverIdentifier[0] === "rtsp")) {
+    console.error("VERSION should not have a semver identifier other than -rtsp for final release");
     process.exit(1);
 }
 
@@ -60,7 +61,7 @@ if (!dryRun) {
         repoNames,
         ["2-slim-rootless", ver(version, "slim-rootless")],
         "rootless",
-        "BASE_IMAGE=louislam/uptime-kuma:base2-slim"
+        "BASE_IMAGE=nbetcher/uptime-kuma:base2-slim"
     );
 
     // Build full image (rootless)
@@ -71,7 +72,7 @@ if (!dryRun) {
         repoNames,
         ["next-slim", "2-slim", ver(version, "slim")],
         "release",
-        "BASE_IMAGE=louislam/uptime-kuma:base2-slim"
+        "BASE_IMAGE=nbetcher/uptime-kuma:base2-slim"
     );
 
     // Build full image

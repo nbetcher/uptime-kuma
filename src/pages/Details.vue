@@ -100,6 +100,7 @@
                 </span>
                 <span v-if="monitor.type === 'radius'">Radius: {{ filterPassword(monitor.hostname) }}</span>
                 <span v-if="monitor.type === 'redis'">{{ filterPassword(monitor.databaseConnectionString) }}</span>
+                <span v-if="monitor.type === 'rtsp'">Stream: {{ filterPassword(monitor.url) }}</span>
                 <span v-if="monitor.type === 'sqlserver'">
                     SQL Server: {{ filterPassword(monitor.databaseConnectionString) }}
                 </span>
@@ -160,6 +161,9 @@
                     </div>
                 </div>
             </div>
+
+            <!-- UI-014: recent DOWN frames for RTSP monitors that opted in -->
+            <StreamDownImages :monitor="monitor" />
 
             <!-- Push Examples -->
             <div v-if="monitor.type === 'push'" class="shadow-box big-padding">
@@ -435,6 +439,7 @@ import { useToast } from "vue-toastification";
 const toast = useToast();
 import Confirm from "../components/Confirm.vue";
 import HeartbeatBar from "../components/HeartbeatBar.vue";
+import StreamDownImages from "../components/StreamDownImages.vue";
 import Status from "../components/Status.vue";
 import Datetime from "../components/Datetime.vue";
 import CountUp from "../components/CountUp.vue";
@@ -462,6 +467,7 @@ export default {
         CountUp,
         Datetime,
         HeartbeatBar,
+        StreamDownImages,
         Confirm,
         Status,
         Pagination,

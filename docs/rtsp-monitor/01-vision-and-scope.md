@@ -114,7 +114,7 @@ keep us inside the policy.
 | **SETUP / PLAY / TEARDOWN** | Subsequent RTSP requests that establish, start, and end media transport. |
 | **Basic mode** | Verifies the server is reachable and speaks RTSP/RTMP. No media decoded. |
 | **Enhanced mode** | Verifies that real video frames are flowing. Extracts and inspects N frames. |
-| **Full mode** | Skips Enhanced's heuristics and instead matches a captured frame against user-supplied reference images. |
+| **Full mode** | Captures one frame and matches it against user-supplied reference image(s) using perceptual fingerprinting. Does NOT run Enhanced's multi-frame frozen-frame or black-frame heuristics; the fingerprint comparison is the sole pass/fail signal once a frame is captured. |
 | **Reference image** | A user-supplied still that defines "the scene the camera should be looking at." Day-time and Night-time variants supported. |
 | **Fingerprint** | A small, opaque blob (typically 64–128 bits) summarising an image's perceptual content. Distance between fingerprints estimates similarity. |
 | **dHash / pHash** | Two perceptual-hashing techniques. dHash compares neighbour-pixel gradients; pHash uses the DCT. Both produce a small bit-string usable for similarity comparison. |
