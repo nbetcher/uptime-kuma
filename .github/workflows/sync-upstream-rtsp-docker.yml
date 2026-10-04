@@ -573,6 +573,15 @@ jobs:
       - name: Build merged source
         run: npm run build
 
+      # A clean textual merge can still break the feature (e.g. an
+      # upstream change to the monitor loop). The RTSP suite decodes real
+      # H.264 fixtures and runs against real SQLite, so nothing is
+      # published unless it passes on the merged tree.
+      - name: Run RTSP backend tests
+        env:
+          TEST_BACKEND: "1"
+        run: node --test --test-reporter=spec test/backend-test/monitors/test-rtsp-*.js
+
       - name: Login to Docker Hub
         uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
