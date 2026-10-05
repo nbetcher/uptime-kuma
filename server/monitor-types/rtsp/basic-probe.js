@@ -12,9 +12,7 @@ const RTMP_HANDSHAKE_BYTES = 1537;
 // human-readable message is fragile across releases and locales; codes
 // are stable. Anything else surfaces with its native message via the
 // generic-error path.
-const TLS_HOSTNAME_CODES = new Set([
-    "ERR_TLS_CERT_ALTNAME_INVALID",
-]);
+const TLS_HOSTNAME_CODES = new Set(["ERR_TLS_CERT_ALTNAME_INVALID"]);
 const TLS_CERT_INVALID_CODES = new Set([
     "DEPTH_ZERO_SELF_SIGNED_CERT",
     "SELF_SIGNED_CERT_IN_CHAIN",
@@ -254,7 +252,8 @@ function writeSocket(socket, data, encoding = null) {
  * response shape per HLDS §5.5 step 4.
  * @param {Buffer} buf Raw response bytes
  * @param {number} requestCSeq The CSeq value sent in the request
- * @returns {{ statusCode: number }} Parsed status code
+ * @returns {{ statusCode: number, headers: object }} Parsed status and headers
+ * @throws {Error} If the response is not a complete matching RTSP response
  */
 function parseRtspResponse(buf, requestCSeq) {
     if (!buf || buf.length < 5) {
@@ -282,7 +281,175 @@ function parseRtspResponse(buf, requestCSeq) {
         throw new Error(messages.RTSP_NOT_SPOKEN());
     }
 
-    return { statusCode };
+    const headers = {};
+    for (const line of head.slice(firstLineEnd + 2, head.indexOf("\r\n\r\n")).split("\r\n")) {
+        const colon = line.indexOf(":");
+        if (colon <= 0) {
+            continue;
+        }
+        const name = line.slice(0, colon).trim().toLowerCase();
+        const value = line.slice(colon + 1).trim();
+        headers[name] = headers[name] ? `${headers[name]}, ${value}` : value;
+    }
+
+    return { statusCode, headers };
+}
+
+/**
+ * Parse authentication challenge parameters without assuming that quoted
+ * values (notably Dahua realms) contain no spaces or commas.
+ * @param {string} value Challenge text after the scheme
+ * @returns {object} Lower-cased challenge parameters
+ */
+function parseAuthParameters(value) {
+    const parameters = {};
+    const pattern = /([a-z][a-z0-9_-]*)\s*=\s*(?:"((?:\\.|[^"])*)"|([^,\s]+))/gi;
+    let match;
+    while ((match = pattern.exec(value)) !== null) {
+        parameters[match[1].toLowerCase()] = (match[2] ?? match[3] ?? "").replace(/\\([\\"])/g, "$1");
+    }
+    return parameters;
+}
+
+/**
+ * Quote a value for an RTSP Authorization header.
+ * @param {unknown} value Header value
+ * @returns {string} Quoted and escaped value
+ */
+function quoteAuth(value) {
+    return `"${String(value).replace(/([\\"])/g, "\\$1")}"`;
+}
+
+/**
+ * Build Basic or Digest authorization for an RTSP challenge.
+ * @param {string} challenge WWW-Authenticate header
+ * @param {object} ctx Preflight context
+ * @param {string} method RTSP method
+ * @param {string} uri Request URI
+ * @returns {string} Authorization header value
+ * @throws {Error} If the challenge scheme, algorithm, or qop is unsupported
+ */
+function buildRtspAuthorization(challenge, ctx, method, uri) {
+    if (/^Basic(?:\s|$)/i.test(challenge)) {
+        return `Basic ${Buffer.from(`${ctx.username}:${ctx.password}`, "utf8").toString("base64")}`;
+    }
+    if (!/^Digest(?:\s|$)/i.test(challenge)) {
+        throw new Error(messages.RTSP_AUTH_UNSUPPORTED("unknown authentication scheme"));
+    }
+
+    const params = parseAuthParameters(challenge.replace(/^Digest\s*/i, ""));
+    if (!params.realm || !params.nonce) {
+        throw new Error(messages.RTSP_AUTH_UNSUPPORTED("Digest challenge is missing realm or nonce"));
+    }
+
+    const algorithm = (params.algorithm || "MD5").toUpperCase();
+    const hashNames = {
+        MD5: "md5",
+        "MD5-SESS": "md5",
+        "SHA-256": "sha256",
+        "SHA-256-SESS": "sha256",
+    };
+    const hashName = hashNames[algorithm];
+    if (!hashName) {
+        throw new Error(messages.RTSP_AUTH_UNSUPPORTED(`Digest algorithm ${algorithm}`));
+    }
+    const hash = (text) => crypto.createHash(hashName).update(text, "utf8").digest("hex");
+    const cnonce = crypto.randomBytes(16).toString("hex");
+    const nc = "00000001";
+    const offeredQop = (params.qop || "")
+        .split(",")
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean);
+    const qop = offeredQop.includes("auth") ? "auth" : "";
+    if (offeredQop.length > 0 && !qop) {
+        throw new Error(messages.RTSP_AUTH_UNSUPPORTED(`Digest qop ${params.qop}`));
+    }
+
+    let ha1 = hash(`${ctx.username}:${params.realm}:${ctx.password}`);
+    if (algorithm.endsWith("-SESS")) {
+        ha1 = hash(`${ha1}:${params.nonce}:${cnonce}`);
+    }
+    const ha2 = hash(`${method}:${uri}`);
+    const response = qop
+        ? hash(`${ha1}:${params.nonce}:${nc}:${cnonce}:${qop}:${ha2}`)
+        : hash(`${ha1}:${params.nonce}:${ha2}`);
+    const fields = [
+        `username=${quoteAuth(ctx.username)}`,
+        `realm=${quoteAuth(params.realm)}`,
+        `nonce=${quoteAuth(params.nonce)}`,
+        `uri=${quoteAuth(uri)}`,
+        `response=${quoteAuth(response)}`,
+        `algorithm=${algorithm}`,
+    ];
+    if (params.opaque) {
+        fields.push(`opaque=${quoteAuth(params.opaque)}`);
+    }
+    if (qop) {
+        fields.push(`qop=${qop}`, `nc=${nc}`, `cnonce=${quoteAuth(cnonce)}`);
+    }
+    return `Digest ${fields.join(", ")}`;
+}
+
+/**
+ * Send one RTSP request over a fresh connection.
+ * @param {object} ctx Preflight context
+ * @param {string} method RTSP method
+ * @param {number} cseq Sequence number
+ * @param {string|null} authorization Optional Authorization header value
+ * @param {number} deadlineMs Absolute deadline
+ * @returns {Promise<{statusCode: number, headers: object}>} Parsed response
+ */
+async function requestRtsp(ctx, method, cseq, authorization, deadlineMs) {
+    const remaining = Math.max(1, deadlineMs - Date.now());
+    const requestCtx = { ...ctx, timeoutMs: remaining };
+    const request = [
+        `${method} ${ctx.url} RTSP/1.0`,
+        `CSeq: ${cseq}`,
+        `User-Agent: ${RTSP_USER_AGENT}`,
+        ...(method === "DESCRIBE" ? ["Accept: application/sdp"] : []),
+        ...(authorization ? [`Authorization: ${authorization}`] : []),
+        "",
+        "",
+    ].join("\r\n");
+    const socket = await openSocket(requestCtx);
+    try {
+        await writeSocket(socket, request, "utf8");
+        const response = await readBytes(socket, MAX_RESPONSE_BYTES, Math.max(1, deadlineMs - Date.now()), true);
+        return parseRtspResponse(response, cseq);
+    } finally {
+        if (!socket.destroyed) {
+            socket.destroy();
+        }
+    }
+}
+
+/**
+ * Prove that configured RTSP credentials are both required and accepted.
+ * This prevents a decoder from reporting success for anonymously accessible
+ * media while silently ignoring an incorrect password.
+ * @param {object} ctx Preflight context
+ * @returns {Promise<void>}
+ */
+async function verifyRtspCredentials(ctx) {
+    if ((ctx.protocol !== "rtsp" && ctx.protocol !== "rtsps") || (!ctx.username && !ctx.password)) {
+        return;
+    }
+
+    const deadlineMs = Date.now() + ctx.timeoutMs;
+    const initial = await requestRtsp(ctx, "DESCRIBE", 1, null, deadlineMs);
+    if (initial.statusCode !== 401) {
+        throw new Error(messages.RTSP_AUTH_NOT_ENFORCED());
+    }
+    const challenge = initial.headers["www-authenticate"];
+    if (!challenge) {
+        throw new Error(messages.RTSP_AUTH_UNSUPPORTED("401 response has no WWW-Authenticate header"));
+    }
+
+    const authorization = buildRtspAuthorization(challenge, ctx, "DESCRIBE", ctx.url);
+    const authenticated = await requestRtsp(ctx, "DESCRIBE", 2, authorization, deadlineMs);
+    if (authenticated.statusCode === 401 || authenticated.statusCode === 403) {
+        throw new Error(messages.RTSP_AUTH_FAILED());
+    }
 }
 
 /**
@@ -430,5 +597,7 @@ module.exports = {
     classifyRtspStatus,
     classifySocketError,
     verifyTlsEndpoint,
+    verifyRtspCredentials,
+    buildRtspAuthorization,
     writeSocket,
 };

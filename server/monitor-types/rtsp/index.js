@@ -1,6 +1,6 @@
 const { MonitorType } = require("../monitor-type");
 const { log } = require("../../../src/util");
-const { basicProbe } = require("./basic-probe");
+const { basicProbe, verifyRtspCredentials } = require("./basic-probe");
 const { acquireConcurrencyToken, acquireMonitorMutex, clearSkips, SkipCheckError } = require("./concurrency");
 const { probeNativeSupport } = require("./frame-capture");
 const { messages } = require("./messages");
@@ -72,6 +72,16 @@ class RtspMonitorType extends MonitorType {
 
             if (ctx.tlsVerify && (ctx.protocol === "rtsps" || ctx.protocol === "rtmps")) {
                 throw new Error(messages.VERIFIED_TLS_CAPTURE_UNAVAILABLE);
+            }
+
+            const authStartedAt = Date.now();
+            await verifyRtspCredentials({
+                ...ctx,
+                timeoutMs: Math.min(ctx.timeoutMs, ctx.budgetMs),
+            });
+            ctx.budgetMs -= Date.now() - authStartedAt;
+            if (ctx.budgetMs < 1000) {
+                throw new Error(messages.TIMED_OUT(budgetMs));
             }
 
             const status = await RtspMonitorType.moduleStatus();
